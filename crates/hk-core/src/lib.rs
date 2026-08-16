@@ -1,5 +1,6 @@
 pub mod adapter;
 pub mod auditor;
+pub mod brain;
 pub mod config;
 pub mod deployer;
 pub mod error;
@@ -10,7 +11,9 @@ pub mod models;
 pub mod sanitize;
 pub mod scanner;
 pub mod service;
+pub mod shared;
 pub mod skills_cli;
+pub mod steward;
 pub mod store;
 
 pub use error::HkError;

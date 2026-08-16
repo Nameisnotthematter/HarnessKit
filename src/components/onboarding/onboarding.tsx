@@ -264,6 +264,7 @@ const FLOAT_DELAYS: Record<(typeof AGENT_ORDER)[number], number> = {
   windsurf: 1.6,
   opencode: 0.8,
   hermes: 1.9,
+  openclaw: 1.7,
   kiro: 1.4,
   omp: 1.0,
 };
@@ -280,6 +281,7 @@ const SCATTER_POSITIONS: Record<
   windsurf: { x: 0, y: 108, r: -6 },
   opencode: { x: 210, y: -10, r: 8 },
   hermes: { x: -60, y: -115, r: 18 },
+  openclaw: { x: 205, y: 45, r: -12 },
   kiro: { x: 40, y: -126, r: -10 },
   omp: { x: -200, y: 60, r: 22 },
 };

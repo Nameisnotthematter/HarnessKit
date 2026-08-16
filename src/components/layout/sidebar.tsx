@@ -2,6 +2,7 @@ import { clsx } from "clsx";
 import {
   Blocks,
   Bot,
+  Brain,
   LayoutDashboard,
   Package,
   Settings,
@@ -19,6 +20,7 @@ import { WebUpdateCard } from "./web-update-card";
 const mainNavItems = [
   { to: "/", icon: LayoutDashboard, labelKey: "overview" },
   { to: "/agents", icon: Bot, labelKey: "agents" },
+  { to: "/brain", icon: Brain, labelKey: "brain" },
   { to: "/extensions", icon: Blocks, labelKey: "extensions" },
   { to: "/kits", icon: Package, labelKey: "kits" },
   { to: "/audit", icon: Shield, labelKey: "audit" },

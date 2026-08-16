@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod audit;
+pub mod brain;
 pub mod extensions;
 mod helpers;
 pub mod install;
@@ -16,6 +17,7 @@ pub use helpers::{FileEntry, list_dir_entries};
 // Re-export all commands at top level so main.rs doesn't need to change
 pub use agents::*;
 pub use audit::*;
+pub use brain::*;
 pub use extensions::*;
 pub use install::*;
 pub use kits::*;

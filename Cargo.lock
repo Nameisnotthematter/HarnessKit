@@ -1931,6 +1931,7 @@ dependencies = [
  "comfy-table",
  "dirs",
  "hk-core",
+ "hk-steward",
  "hk-web",
  "rand 0.9.4",
  "serde",
@@ -1992,6 +1993,20 @@ dependencies = [
  "tauri-plugin-updater",
  "tempfile",
  "uuid",
+]
+
+[[package]]
+name = "hk-steward"
+version = "1.8.2"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "dirs",
+ "hk-core",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

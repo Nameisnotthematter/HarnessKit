@@ -421,6 +421,7 @@ export const AGENT_ORDER = [
   "windsurf",
   "opencode",
   "hermes",
+  "openclaw",
   "kiro",
   "omp",
 ] as const;
@@ -447,6 +448,7 @@ const AGENT_DISPLAY_NAMES: Record<string, string> = {
   windsurf: "Devin Desktop",
   opencode: "OpenCode",
   hermes: "Hermes",
+  openclaw: "OpenClaw",
   kiro: "Kiro",
   omp: "Oh My Pi",
 };

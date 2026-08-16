@@ -1,0 +1,173 @@
+import { create } from "zustand";
+import { humanizeError } from "@/lib/errors";
+import { transport } from "@/lib/transport";
+
+export type BrainAgentId = "codex" | "hermes" | "openclaw";
+export type BrainSectionKind = "config" | "persona" | "memory";
+
+export interface BrainFile {
+  path: string;
+  label: string;
+  summary: string;
+  exists: boolean;
+  content?: string;
+  read_only?: boolean;
+}
+
+export interface BrainAgent {
+  id: BrainAgentId;
+  name: string;
+  version?: string;
+  status: "ready" | "partial" | "offline";
+  config: BrainFile[];
+  persona: BrainFile[];
+  memory: BrainFile[];
+}
+
+export interface SharedSkill {
+  name: string;
+  description: string;
+  source: string;
+  agents: BrainAgentId[];
+  status: "ready" | "needs_setup" | "unavailable";
+}
+
+export interface McpRegistryEntry {
+  id: string;
+  name: string;
+  description: string;
+  transport: "stdio" | "http" | "sse";
+  agents: Record<BrainAgentId, boolean>;
+  status: "configured" | "disabled";
+}
+
+export interface StewardValidation {
+  label: string;
+  status: "pass" | "warning" | "fail";
+  detail?: string;
+}
+
+export interface StewardProposal {
+  id: string;
+  title: string;
+  summary: string;
+  diff: string;
+  risk: "low" | "medium" | "high";
+  validations: StewardValidation[];
+  status: "pending" | "approved" | "rejected" | "failed";
+  created_at: string;
+}
+
+export interface BrainSnapshot {
+  agents: BrainAgent[];
+  shared_skills: SharedSkill[];
+  mcp_registry: McpRegistryEntry[];
+  proposals: StewardProposal[];
+  captured_at: string;
+}
+
+export interface StewardMessage {
+  id: string;
+  role: "user" | "steward";
+  content: string;
+}
+
+interface BrainState {
+  snapshot: BrainSnapshot | null;
+  proposals: StewardProposal[];
+  messages: StewardMessage[];
+  loading: boolean;
+  proposing: boolean;
+  approvingId: string | null;
+  error: string | null;
+  fetchSnapshot: () => Promise<void>;
+  propose: (prompt: string) => Promise<void>;
+  approve: (proposalId: string) => Promise<void>;
+}
+
+function messageId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+export const useBrainStore = create<BrainState>((set, get) => ({
+  snapshot: null,
+  proposals: [],
+  messages: [],
+  loading: false,
+  proposing: false,
+  approvingId: null,
+  error: null,
+
+  async fetchSnapshot() {
+    set({ loading: true, error: null });
+    try {
+      const snapshot = await transport<BrainSnapshot>("brain_snapshot");
+      set({ snapshot, proposals: snapshot.proposals ?? [], loading: false });
+    } catch (error) {
+      set({ error: humanizeError(error), loading: false });
+    }
+  },
+
+  async propose(prompt) {
+    const content = prompt.trim();
+    if (!content || get().proposing) return;
+
+    const userMessage: StewardMessage = {
+      id: messageId(),
+      role: "user",
+      content,
+    };
+    set((state) => ({
+      proposing: true,
+      error: null,
+      messages: [...state.messages, userMessage],
+    }));
+
+    try {
+      const proposal = await transport<StewardProposal>("steward_propose", {
+        prompt: content,
+      });
+      set((state) => ({
+        proposing: false,
+        proposals: [proposal, ...state.proposals],
+        messages: [
+          ...state.messages,
+          {
+            id: messageId(),
+            role: "steward",
+            content: `Proposal ready: ${proposal.title}`,
+          },
+        ],
+      }));
+    } catch (error) {
+      set({ error: humanizeError(error), proposing: false });
+    }
+  },
+
+  async approve(proposalId) {
+    if (get().approvingId) return;
+    set({ approvingId: proposalId, error: null });
+    try {
+      const approved = await transport<StewardProposal>("steward_approve", {
+        proposalId,
+      });
+      set((state) => ({
+        approvingId: null,
+        proposals: state.proposals.map((proposal) =>
+          proposal.id === proposalId ? approved : proposal,
+        ),
+        messages: [
+          ...state.messages,
+          {
+            id: messageId(),
+            role: "steward",
+            content: `Applied approved proposal: ${approved.title}`,
+          },
+        ],
+      }));
+      await get().fetchSnapshot();
+    } catch (error) {
+      set({ error: humanizeError(error), approvingId: null });
+    }
+  },
+}));

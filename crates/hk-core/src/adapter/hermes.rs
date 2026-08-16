@@ -52,6 +52,10 @@ impl HermesAdapter {
         Self { home }
     }
 
+    pub(crate) fn with_home_for_brain(home: PathBuf) -> Self {
+        Self { home }
+    }
+
     /// List all category subdirectory names under `~/.hermes/skills/`.
     /// Returns sorted names, excluding hidden dirs. Used by the UI category picker.
     pub fn list_categories(&self) -> Vec<String> {

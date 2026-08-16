@@ -17,6 +17,7 @@ comfy-table = "7"
 colored = "3"
 dirs = "6"
 hk-web = { path = "../hk-web" }
+hk-steward = { path = "../hk-steward" }
 tokio = { version = "1", features = ["full"] }
 rand = "0.9"
 

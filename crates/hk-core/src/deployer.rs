@@ -157,6 +157,9 @@ fn json_top_key(format: McpFormat) -> &'static str {
         McpFormat::HermesYaml => {
             unreachable!("HermesYaml format routes through dedicated YAML helpers")
         }
+        McpFormat::OpenClaw => {
+            unreachable!("OpenClaw format routes through nested JSON helpers")
+        }
     }
 }
 
@@ -184,6 +187,7 @@ pub fn deploy_mcp_server(
         McpFormat::Toml => deploy_mcp_server_toml(config_path, entry),
         McpFormat::Opencode => deploy_mcp_server_opencode(config_path, entry),
         McpFormat::HermesYaml => deploy_mcp_server_hermes_yaml(config_path, entry),
+        McpFormat::OpenClaw => deploy_mcp_server_openclaw(config_path, entry),
     }
 }
 
@@ -250,6 +254,15 @@ fn build_mcp_json_value(
         RemoteMcpSchema::ServerUrl => {
             obj.insert("serverUrl".into(), url.into());
         }
+        RemoteMcpSchema::OpenClaw => {
+            let transport = if entry.transport == McpTransport::Sse {
+                "sse"
+            } else {
+                "streamable-http"
+            };
+            obj.insert("url".into(), url.into());
+            obj.insert("transport".into(), transport.into());
+        }
         // Non-JSON formats have their own writers; validation rejects
         // Unsupported before this point. Reaching here means an adapter's
         // mcp_format() and remote_mcp_schema() disagree — surface it as an
@@ -276,6 +289,34 @@ fn build_mcp_json_value(
         );
     }
     Ok(serde_json::Value::Object(obj))
+}
+
+/// OpenClaw stores MCP entries under the nested `mcp.servers` object.
+/// Unknown sibling keys in `openclaw.json`, `mcp`, and existing servers are
+/// preserved by the locked read-modify-write primitive.
+fn deploy_mcp_server_openclaw(config_path: &Path, entry: &McpServerEntry) -> Result<(), HkError> {
+    let mut value = build_mcp_json_value(entry, RemoteMcpSchema::OpenClaw)?;
+    value
+        .as_object_mut()
+        .ok_or_else(|| HkError::Internal("OpenClaw MCP entry is not an object".into()))?
+        .insert("enabled".into(), serde_json::Value::Bool(true));
+    locked_modify_json(config_path, |config| {
+        let root = config
+            .as_object_mut()
+            .ok_or_else(|| HkError::ConfigCorrupted("OpenClaw config is not an object".into()))?;
+        let mcp = root
+            .entry("mcp")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .ok_or_else(|| HkError::ConfigCorrupted("mcp is not an object".into()))?;
+        let servers = mcp
+            .entry("servers")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .ok_or_else(|| HkError::ConfigCorrupted("mcp.servers is not an object".into()))?;
+        servers.insert(entry.name.clone(), value);
+        Ok(())
+    })
 }
 
 /// JSON-based MCP deploy (Claude, Gemini, Cursor, Antigravity, Copilot,
@@ -571,6 +612,26 @@ pub fn set_hermes_mcp_enabled(
             .and_then(|v| v.as_mapping_mut())
             .ok_or_else(|| HkError::NotFound(format!("MCP server '{name}' not found in config")))?;
         server.insert("enabled".into(), serde_yaml::Value::Bool(enabled));
+        Ok(())
+    })
+}
+
+/// Flip OpenClaw's native `mcp.servers.<name>.enabled` flag in place.
+pub fn set_openclaw_mcp_enabled(
+    config_path: &Path,
+    name: &str,
+    enabled: bool,
+) -> Result<(), HkError> {
+    locked_modify_json(config_path, |config| {
+        let server = config
+            .get_mut("mcp")
+            .and_then(|v| v.get_mut("servers"))
+            .and_then(|v| v.get_mut(name))
+            .and_then(|v| v.as_object_mut())
+            .ok_or_else(|| {
+                HkError::NotFound(format!("MCP server '{name}' not found in OpenClaw config"))
+            })?;
+        server.insert("enabled".into(), serde_json::Value::Bool(enabled));
         Ok(())
     })
 }
@@ -1067,6 +1128,16 @@ pub fn remove_mcp_server(
             }
             Ok(())
         }),
+        McpFormat::OpenClaw => locked_modify_json(config_path, |config| {
+            if let Some(servers) = config
+                .get_mut("mcp")
+                .and_then(|v| v.get_mut("servers"))
+                .and_then(|v| v.as_object_mut())
+            {
+                servers.remove(server_name);
+            }
+            Ok(())
+        }),
         _ => locked_modify_json(config_path, |config| {
             let key = json_top_key(format);
             if let Some(servers) = config.get_mut(key).and_then(|v| v.as_object_mut()) {
@@ -1236,6 +1307,23 @@ pub fn restore_mcp_server(
             "Hermes MCP uses native in-place enable/disable (set_hermes_mcp_enabled); \
              the remove+snapshot+restore path is never reached for Hermes"
         ),
+        McpFormat::OpenClaw => locked_modify_json(config_path, |config| {
+            let root = config.as_object_mut().ok_or_else(|| {
+                HkError::ConfigCorrupted("OpenClaw config is not an object".into())
+            })?;
+            let mcp = root
+                .entry("mcp")
+                .or_insert_with(|| serde_json::json!({}))
+                .as_object_mut()
+                .ok_or_else(|| HkError::ConfigCorrupted("mcp is not an object".into()))?;
+            let servers = mcp
+                .entry("servers")
+                .or_insert_with(|| serde_json::json!({}))
+                .as_object_mut()
+                .ok_or_else(|| HkError::ConfigCorrupted("mcp.servers is not an object".into()))?;
+            servers.insert(server_name.to_string(), entry.clone());
+            Ok(())
+        }),
         _ => {
             let key = json_top_key(format);
             locked_modify_json(config_path, |config| {
@@ -1718,6 +1806,14 @@ pub fn read_mcp_server_config(
             "Hermes MCP uses native in-place enable/disable (set_hermes_mcp_enabled); \
              the read-config-for-snapshot path is never reached for Hermes"
         ),
+        McpFormat::OpenClaw => {
+            let config = read_or_create_json(config_path)?;
+            Ok(config
+                .get("mcp")
+                .and_then(|v| v.get("servers"))
+                .and_then(|v| v.get(server_name))
+                .cloned())
+        }
         _ => {
             let config = read_or_create_json(config_path)?;
             let key = json_top_key(format);
@@ -2024,6 +2120,7 @@ mod tests {
             McpFormat::Toml => Box::new(codex::CodexAdapter::with_home(home)),
             McpFormat::Opencode => Box::new(opencode::OpencodeAdapter::with_home(home)),
             McpFormat::HermesYaml => Box::new(hermes::HermesAdapter::with_home(home)),
+            McpFormat::OpenClaw => Box::new(openclaw::OpenClawAdapter::with_home(home)),
         }
     }
 
@@ -3949,5 +4046,44 @@ mod tests {
         let entries: Vec<(String, bool)> = serde_json::from_str(&result).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].0, "file:///plugin-b");
+    }
+
+    #[test]
+    fn openclaw_mcp_nested_deploy_and_native_toggle_preserve_siblings() {
+        let dir = TempDir::new().unwrap();
+        let config = dir.path().join("openclaw.json");
+        std::fs::write(
+            &config,
+            r#"{"gateway":{"port":18789},"mcp":{"servers":{"existing":{"command":"old","unknown":7}}}}"#,
+        )
+        .unwrap();
+        let entry = McpServerEntry {
+            name: "docs".into(),
+            command: "docs-mcp".into(),
+            args: vec!["--stdio".into()],
+            ..Default::default()
+        };
+        deploy_mcp_server(&config, &entry, &*test_adapter(McpFormat::OpenClaw)).unwrap();
+        set_openclaw_mcp_enabled(&config, "docs", false).unwrap();
+
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        assert_eq!(doc["gateway"]["port"], 18789);
+        assert_eq!(doc["mcp"]["servers"]["existing"]["unknown"], 7);
+        assert_eq!(doc["mcp"]["servers"]["docs"]["command"], "docs-mcp");
+        assert_eq!(doc["mcp"]["servers"]["docs"]["enabled"], false);
+    }
+
+    #[test]
+    fn openclaw_remote_mcp_uses_runtime_transport_names() {
+        let dir = TempDir::new().unwrap();
+        let config = dir.path().join("openclaw.json");
+        let entry = remote_entry(McpTransport::Http);
+        deploy_mcp_server(&config, &entry, &*test_adapter(McpFormat::OpenClaw)).unwrap();
+        let saved = read_mcp_server_config(&config, "linear", McpFormat::OpenClaw)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved["transport"], "streamable-http");
+        assert_eq!(saved["url"], "https://mcp.linear.app/mcp");
     }
 }

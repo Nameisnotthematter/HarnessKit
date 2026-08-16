@@ -189,7 +189,9 @@ fn toggle_mcp(
         // back by read_mcp_servers on rescan. Mirrors `hermes mcp` enable/disable.
         // Docs: https://hermes-agent.nousresearch.com/docs/reference/mcp-config-reference
         if a.supports_native_mcp_toggle() {
-            if a.name() == "kiro" {
+            if a.name() == "openclaw" {
+                deployer::set_openclaw_mcp_enabled(&config_path, &ext.name, enabled)?;
+            } else if a.name() == "kiro" {
                 deployer::set_kiro_mcp_enabled(&config_path, &ext.name, enabled)?;
             } else if a.name() == "omp" {
                 // Entry flag flips in the scope's own file; the user-level

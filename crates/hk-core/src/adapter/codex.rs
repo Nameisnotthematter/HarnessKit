@@ -61,6 +61,10 @@ impl CodexAdapter {
         Self { home }
     }
 
+    pub(crate) fn with_home_for_brain(home: PathBuf) -> Self {
+        Self { home }
+    }
+
     fn parse_json(path: &Path) -> Option<serde_json::Value> {
         let content = std::fs::read_to_string(path).ok()?;
         serde_json::from_str(&content).ok()

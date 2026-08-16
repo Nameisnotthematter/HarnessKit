@@ -9,6 +9,7 @@ pub mod hook_events;
 pub mod kiro;
 pub mod opencode;
 pub mod omp;
+pub mod openclaw;
 pub mod windsurf;
 
 use crate::models::ConfigScope;
@@ -303,6 +304,8 @@ pub enum McpFormat {
     /// Each entry is URL-based ({url, headers?, transport: sse?}) or
     /// command-based ({command, args?, env?}).
     HermesYaml,
+    /// JSON `openclaw.json` with entries nested at `mcp.servers.<name>`.
+    OpenClaw,
 }
 
 /// How an agent's config spells a remote (HTTP/SSE) MCP entry.
@@ -328,6 +331,8 @@ pub enum RemoteMcpSchema {
     OpencodeRemote,
     /// YAML `url:` + `headers:` + optional `transport: sse` — Hermes.
     HermesUrl,
+    /// `{url, transport: "streamable-http"|"sse", headers, enabled}`.
+    OpenClaw,
     /// Agent has no remote MCP concept; deploying a remote entry is an error.
     Unsupported,
 }
@@ -678,6 +683,7 @@ pub fn all_adapters() -> Vec<Box<dyn AgentAdapter>> {
         Box::new(windsurf::WindsurfAdapter::new()),
         Box::new(opencode::OpencodeAdapter::new()),
         Box::new(hermes::HermesAdapter::new()),
+        Box::new(openclaw::OpenClawAdapter::new()),
         Box::new(kiro::KiroAdapter::new()),
         Box::new(omp::OmpAdapter::new()),
     ]
@@ -739,9 +745,9 @@ mod tests {
     }
 
     #[test]
-    fn test_all_adapters_returns_eleven() {
+    fn test_all_adapters_returns_twelve() {
         let adapters = all_adapters();
-        assert_eq!(adapters.len(), 11);
+        assert_eq!(adapters.len(), 12);
         let names: Vec<&str> = adapters.iter().map(|a| a.name()).collect();
         assert!(names.contains(&"claude"));
         assert!(names.contains(&"cursor"));
@@ -752,6 +758,7 @@ mod tests {
         assert!(names.contains(&"windsurf"));
         assert!(names.contains(&"opencode"));
         assert!(names.contains(&"hermes"));
+        assert!(names.contains(&"openclaw"));
         assert!(names.contains(&"kiro"));
         assert!(names.contains(&"omp"));
     }
@@ -774,7 +781,8 @@ mod tests {
         // unnecessarily rewrite users' mcp_config.json with absolute paths,
         // hurting cross-machine portability.
         for name in [
-            "claude", "codex", "gemini", "cursor", "copilot", "opencode", "hermes", "kiro", "omp",
+            "claude", "codex", "gemini", "cursor", "copilot", "opencode", "hermes", "openclaw",
+            "kiro", "omp",
         ] {
             assert!(
                 !by_name[name].needs_path_injection(),
@@ -787,7 +795,7 @@ mod tests {
     fn test_supports_native_mcp_toggle_only_native_agents() {
         let adapters = all_adapters();
         for a in &adapters {
-            let expected = matches!(a.name(), "hermes" | "kiro" | "omp");
+            let expected = matches!(a.name(), "hermes" | "openclaw" | "kiro" | "omp");
             assert_eq!(
                 a.supports_native_mcp_toggle(),
                 expected,
@@ -837,6 +845,7 @@ mod tests {
             ("kiro", true, true, true, true, false),     // kirodotdev/Kiro#5440
             ("omp", true, true, false, false, true),     // hooks are JS/TS modules
             ("hermes", false, false, false, true, true), // global-only (hermes-agent#4667)
+            ("openclaw", false, false, false, false, true), // workspace/global-only
         ];
 
         let adapters = all_adapters();
@@ -941,8 +950,8 @@ mod tests {
         // skill concept, drop it from this assertion explicitly.
         let adapters = all_adapters();
         for a in &adapters {
-            if a.name() == "hermes" {
-                continue; // global-only: no project skills (hermes-agent#4667)
+            if matches!(a.name(), "hermes" | "openclaw") {
+                continue; // global/workspace-only adapters
             }
             assert!(
                 !a.project_skill_dirs().is_empty(),
@@ -969,12 +978,13 @@ mod tests {
             ("kiro", ".kiro/skills"),
             ("omp", ".omp/skills"),
             // hermes is global-only — no project skill dir (hermes-agent#4667).
+            // openclaw uses its configured workspace, not a repository-relative path.
         ]
         .into_iter()
         .collect();
         for a in &adapters {
-            if a.name() == "hermes" {
-                continue; // global-only: no project skills (hermes-agent#4667)
+            if matches!(a.name(), "hermes" | "openclaw") {
+                continue; // global/workspace-only adapters
             }
             let actual = a.project_skill_dirs().into_iter().next().unwrap();
             let want = expected.get(a.name()).expect("adapter not in expected map");

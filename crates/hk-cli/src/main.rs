@@ -104,10 +104,21 @@ enum Commands {
         #[arg(long)]
         name: Option<String>,
     },
+    /// Start the localhost-only proposal service; approval remains in the UI
+    Steward {
+        #[arg(long, default_value_t = 7071)]
+        port: u16,
+    },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    if let Commands::Steward { port } = cli.command {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(hk_steward::serve(port))?;
+        return Ok(());
+    }
 
     if let Commands::Serve {
         port,
@@ -185,6 +196,7 @@ fn main() -> Result<()> {
             cmd_toggle(&store, &extensions, name.as_deref(), pack.as_deref(), false)
         }
         Commands::Serve { .. } => unreachable!("handled above"),
+        Commands::Steward { .. } => unreachable!("handled above"),
     }
 }
 

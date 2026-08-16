@@ -1,0 +1,15 @@
+[package]
+name = "hk-steward"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+hk-core = { path = "../hk-core" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+axum = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+clap = { version = "4", features = ["derive"] }
+dirs = "6"

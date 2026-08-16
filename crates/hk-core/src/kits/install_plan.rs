@@ -62,6 +62,18 @@ fn mcp_entry_exists(config_path: &Path, name: &str, format: McpFormat) -> bool {
                 .and_then(|v| v.get(name))
                 .is_some()
         }
+        McpFormat::OpenClaw => {
+            let Ok(bytes) = std::fs::read(config_path) else {
+                return false;
+            };
+            let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                return false;
+            };
+            v.get("mcp")
+                .and_then(|m| m.get("servers"))
+                .and_then(|servers| servers.get(name))
+                .is_some()
+        }
     }
 }
 

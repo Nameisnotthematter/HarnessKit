@@ -12,6 +12,7 @@ import { api } from "./lib/invoke";
 import { isDesktop } from "./lib/transport";
 import AgentsPage from "./pages/agents";
 import AuditPage from "./pages/audit";
+import BrainPage from "./pages/brain";
 import ExtensionsPage from "./pages/extensions";
 import KitsPage from "./pages/kits";
 import MarketplacePage from "./pages/marketplace";
@@ -193,6 +194,7 @@ export default function App() {
               <Route index element={<OverviewPage />} />
               <Route path="kits" element={<KitsPage />} />
               <Route path="agents" element={<AgentsPage />} />
+              <Route path="brain" element={<BrainPage />} />
               <Route path="extensions" element={<ExtensionsPage />} />
               <Route path="marketplace" element={<MarketplacePage />} />
               <Route path="audit" element={<AuditPage />} />
