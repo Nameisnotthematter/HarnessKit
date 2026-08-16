@@ -923,9 +923,27 @@ fn configure_shared_skill_root(home: &Path) -> Result<(), HkError> {
         .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()))
         .as_mapping_mut()
         .ok_or_else(|| HkError::ConfigCorrupted("Hermes skills is not a mapping".into()))?;
-    let dirs = skills
+    let dirs_value = skills
         .entry("external_dirs".into())
-        .or_insert_with(|| serde_yaml::Value::Sequence(vec![]))
+        .or_insert_with(|| serde_yaml::Value::Sequence(vec![]));
+    if let Some(raw) = dirs_value.as_str() {
+        let parsed = if raw.trim_start().starts_with('[') {
+            serde_json::from_str::<Vec<String>>(raw).map_err(|error| {
+                HkError::ConfigCorrupted(format!(
+                    "Hermes skills.external_dirs contains invalid JSON: {error}"
+                ))
+            })?
+        } else {
+            vec![raw.to_string()]
+        };
+        *dirs_value = serde_yaml::Value::Sequence(
+            parsed
+                .into_iter()
+                .map(serde_yaml::Value::String)
+                .collect(),
+        );
+    }
+    let dirs = dirs_value
         .as_sequence_mut()
         .ok_or_else(|| HkError::ConfigCorrupted("skills.external_dirs is not a list".into()))?;
     if !dirs.iter().any(|value| value.as_str() == Some(&shared)) {
@@ -1548,6 +1566,11 @@ fn validate_targets(targets: &[PathBuf]) -> Result<(), HkError> {
         if !path.exists() {
             continue;
         }
+        if path.is_dir() {
+            crate::shared::inventory_skills(path)
+                .map_err(|error| HkError::Internal(error.to_string()))?;
+            continue;
+        }
         let raw = fs::read_to_string(path)?;
         match path.extension().and_then(|ext| ext.to_str()) {
             Some("json") => {
@@ -1760,6 +1783,122 @@ mod tests {
         assert!(deterministic_model_proposal("How do shared skills work?").is_none());
         assert!(
             deterministic_model_proposal("Is MCP server data-agent enabled for codex?").is_none()
+        );
+    }
+
+    #[test]
+    fn shared_skill_root_normalizes_legacy_hermes_external_dirs_string() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".hermes")).unwrap();
+        fs::write(
+            temp.path().join(".hermes/config.yaml"),
+            "skills:\n  external_dirs: '[\"/legacy/skills\"]'\n",
+        )
+        .unwrap();
+        fs::create_dir_all(temp.path().join(".openclaw")).unwrap();
+        fs::write(
+            temp.path().join(".openclaw/openclaw.json"),
+            r#"{"skills":{"load":{"extraDirs":["~/.codex/skills"]}}}"#,
+        )
+        .unwrap();
+
+        configure_shared_skill_root(temp.path()).unwrap();
+
+        let hermes: serde_yaml::Value = serde_yaml::from_str(
+            &fs::read_to_string(temp.path().join(".hermes/config.yaml")).unwrap(),
+        )
+        .unwrap();
+        let hermes_dirs = hermes["skills"]["external_dirs"].as_sequence().unwrap();
+        assert!(
+            hermes_dirs
+                .iter()
+                .any(|value| value.as_str() == Some("/legacy/skills"))
+        );
+        assert!(hermes_dirs.iter().any(|value| {
+            value.as_str() == temp.path().join(".agents/skills").to_str()
+        }));
+
+        let openclaw: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(temp.path().join(".openclaw/openclaw.json")).unwrap(),
+        )
+        .unwrap();
+        let openclaw_dirs = openclaw["skills"]["load"]["extraDirs"]
+            .as_array()
+            .unwrap();
+        assert!(
+            openclaw_dirs
+                .iter()
+                .any(|value| value.as_str() == Some("~/.codex/skills"))
+        );
+        assert!(openclaw_dirs.iter().any(|value| {
+            value.as_str() == temp.path().join(".agents/skills").to_str()
+        }));
+    }
+
+    #[test]
+    fn skill_migration_makes_canonical_root_visible_to_all_brain_agents() {
+        let temp = tempfile::tempdir().unwrap();
+        for (root, name) in [
+            (".codex/skills", "codex-skill"),
+            (".openclaw/skills", "openclaw-skill"),
+        ] {
+            let skill = temp.path().join(root).join(name);
+            fs::create_dir_all(&skill).unwrap();
+            fs::write(skill.join("SKILL.md"), format!("# {name}\n")).unwrap();
+        }
+        fs::create_dir_all(temp.path().join(".hermes")).unwrap();
+        fs::write(
+            temp.path().join(".hermes/config.yaml"),
+            "skills:\n  external_dirs: '[]'\n",
+        )
+        .unwrap();
+        fs::create_dir_all(temp.path().join(".openclaw")).unwrap();
+        fs::write(temp.path().join(".openclaw/openclaw.json"), "{}\n").unwrap();
+
+        apply_skills_migration(temp.path()).unwrap();
+
+        let canonical = temp.path().join(".agents/skills");
+        assert!(canonical.join("codex-skill/SKILL.md").is_file());
+        assert!(canonical.join("openclaw-skill/SKILL.md").is_file());
+        for adapter in brain::adapters_for_home(temp.path()) {
+            assert!(
+                adapter.skill_dirs().contains(&canonical),
+                "{} does not load {}",
+                adapter.name(),
+                canonical.display()
+            );
+        }
+    }
+
+    #[test]
+    fn approved_skill_migration_validates_directory_target() {
+        let temp = tempfile::tempdir().unwrap();
+        for (root, name) in [
+            (".agents/skills", "existing-skill"),
+            (".codex/skills", "new-skill"),
+        ] {
+            let skill = temp.path().join(root).join(name);
+            fs::create_dir_all(&skill).unwrap();
+            fs::write(skill.join("SKILL.md"), format!("# {name}\n")).unwrap();
+        }
+        fs::create_dir_all(temp.path().join(".hermes")).unwrap();
+        fs::write(
+            temp.path().join(".hermes/config.yaml"),
+            "skills:\n  external_dirs: '[]'\n",
+        )
+        .unwrap();
+        fs::create_dir_all(temp.path().join(".openclaw")).unwrap();
+        fs::write(temp.path().join(".openclaw/openclaw.json"), "{}\n").unwrap();
+
+        let proposal =
+            propose(temp.path(), "Migrate personal skills to the shared root").unwrap();
+        let approved = approve(temp.path(), &proposal.id).unwrap();
+
+        assert_eq!(approved.status, "approved");
+        assert!(
+            temp.path()
+                .join(".agents/skills/new-skill/SKILL.md")
+                .is_file()
         );
     }
 
