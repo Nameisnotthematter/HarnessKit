@@ -110,7 +110,13 @@ export const useBrainStore = create<BrainState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const snapshot = await transport<BrainSnapshot>("brain_snapshot");
-      set({ snapshot, proposals: snapshot.proposals ?? [], loading: false });
+      set({
+        snapshot,
+        proposals: (snapshot.proposals ?? []).filter(
+          (proposal) => proposal.status === "pending",
+        ),
+        loading: false,
+      });
     } catch (error) {
       set({ error: humanizeError(error), loading: false });
     }
@@ -188,8 +194,8 @@ export const useBrainStore = create<BrainState>((set, get) => ({
       });
       set((state) => ({
         approvingId: null,
-        proposals: state.proposals.map((proposal) =>
-          proposal.id === proposalId ? approved : proposal,
+        proposals: state.proposals.filter(
+          (proposal) => proposal.id !== proposalId,
         ),
         messages: [
           ...state.messages,
@@ -215,8 +221,8 @@ export const useBrainStore = create<BrainState>((set, get) => ({
       });
       set((state) => ({
         rejectingId: null,
-        proposals: state.proposals.map((proposal) =>
-          proposal.id === proposalId ? rejected : proposal,
+        proposals: state.proposals.filter(
+          (proposal) => proposal.id !== proposalId,
         ),
         messages: [
           ...state.messages,

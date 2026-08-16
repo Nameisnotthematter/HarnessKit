@@ -43,10 +43,17 @@ describe("brain-store", () => {
   });
 
   it("loads the snapshot with the dedicated command", async () => {
-    vi.mocked(transport).mockResolvedValue(snapshot);
+    const approved = { ...proposal, id: "p2", status: "approved" as const };
+    const rejected = { ...proposal, id: "p3", status: "rejected" as const };
+    const loadedSnapshot = {
+      ...snapshot,
+      proposals: [proposal, approved, rejected],
+    };
+    vi.mocked(transport).mockResolvedValue(loadedSnapshot);
     await useBrainStore.getState().fetchSnapshot();
     expect(transport).toHaveBeenCalledWith("brain_snapshot");
-    expect(useBrainStore.getState().snapshot).toEqual(snapshot);
+    expect(useBrainStore.getState().snapshot).toEqual(loadedSnapshot);
+    expect(useBrainStore.getState().proposals).toEqual([proposal]);
   });
 
   it("creates a proposal without applying it", async () => {
@@ -96,6 +103,7 @@ describe("brain-store", () => {
       proposalId: "p1",
     });
     expect(transport).toHaveBeenNthCalledWith(2, "brain_snapshot");
+    expect(useBrainStore.getState().proposals).toEqual([]);
   });
 
   it("rejects through steward_reject without refreshing brain files", async () => {
@@ -109,7 +117,7 @@ describe("brain-store", () => {
     expect(transport).toHaveBeenCalledWith("steward_reject", {
       proposalId: "p1",
     });
-    expect(useBrainStore.getState().proposals).toEqual([rejected]);
+    expect(useBrainStore.getState().proposals).toEqual([]);
     const messages = useBrainStore.getState().messages;
     expect(messages[messages.length - 1]?.content).toBe(
       "Rejected proposal: Enable MCP",
