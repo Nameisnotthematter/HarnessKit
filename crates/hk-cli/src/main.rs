@@ -76,7 +76,7 @@ enum Commands {
         #[arg(long)]
         pack: Option<String>,
     },
-    /// Start the web UI server
+    /// Start the Web UI server, or open it if already running
     Serve {
         /// Port to listen on
         #[arg(long, default_value = "7070")]
@@ -129,6 +129,15 @@ fn main() -> Result<()> {
     } = cli.command
     {
         let effective_token = resolve_serve_token(token, no_token);
+        let browser_host = browser_host(&host).to_string();
+        let browser_url = web_ui_url(&host, port, effective_token.as_deref());
+
+        if is_harnesskit_web_ui(&browser_host, port) {
+            open_browser(&browser_url)?;
+            eprintln!("Opened the existing HarnessKit Web UI.");
+            return Ok(());
+        }
+        open_browser_when_ready(browser_host, port, browser_url);
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(hk_web::serve(hk_web::ServeOptions {
@@ -202,6 +211,104 @@ fn main() -> Result<()> {
 
 fn hk_data_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_default().join(".harnesskit")
+}
+
+fn browser_host(host: &str) -> &str {
+    match host {
+        "0.0.0.0" => "127.0.0.1",
+        "::" => "::1",
+        _ => host,
+    }
+}
+
+fn web_ui_url(host: &str, port: u16, token: Option<&str>) -> String {
+    let host = browser_host(host);
+    let host = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+    match token {
+        Some(token) => format!("http://{host}:{port}/?token={token}"),
+        None => format!("http://{host}:{port}/"),
+    }
+}
+
+fn is_harnesskit_web_ui(host: &str, port: u16) -> bool {
+    use std::io::{Read, Write};
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::time::Duration;
+
+    let Ok(mut addresses) = (host, port).to_socket_addrs() else {
+        return false;
+    };
+    let Some(address) = addresses.next() else {
+        return false;
+    };
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(250)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    if write!(stream, "GET / HTTP/1.0\r\nHost: {host}\r\n\r\n").is_err() {
+        return false;
+    }
+    let mut response = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(bytes) => response.extend_from_slice(&buffer[..bytes]),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                break;
+            }
+            Err(_) => return false,
+        }
+    }
+    String::from_utf8_lossy(&response).contains("<title>HarnessKit</title>")
+}
+
+fn open_browser_when_ready(host: String, port: u16, url: String) {
+    std::thread::spawn(move || {
+        for _ in 0..50 {
+            if is_harnesskit_web_ui(&host, port) {
+                if let Err(error) = open_browser(&url) {
+                    eprintln!("Could not open the Web UI automatically: {error}");
+                }
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        eprintln!("Web UI started, but the browser could not be opened automatically.");
+    });
+}
+
+fn open_browser(url: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = std::process::Command::new("open");
+        command.arg(url);
+        command
+    };
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("cmd");
+        command.args(["/C", "start", "", url]);
+        command
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(url);
+        command
+    };
+
+    command.spawn().map(|_| ())
 }
 
 /// Resolve the web access token for `hk serve`.
@@ -1160,5 +1267,23 @@ mod token_persistence_tests {
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
         assert_eq!(read_token_if_secure(&path).as_deref(), Some("new"));
+    }
+}
+
+#[cfg(test)]
+mod serve_browser_tests {
+    use super::{browser_host, web_ui_url};
+
+    #[test]
+    fn builds_local_browser_urls() {
+        assert_eq!(browser_host("0.0.0.0"), "127.0.0.1");
+        assert_eq!(
+            web_ui_url("0.0.0.0", 7070, Some("abc123")),
+            "http://127.0.0.1:7070/?token=abc123"
+        );
+        assert_eq!(
+            web_ui_url("127.0.0.1", 7070, None),
+            "http://127.0.0.1:7070/"
+        );
     }
 }
