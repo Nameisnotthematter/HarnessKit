@@ -10,6 +10,9 @@ Configure an OpenAI-compatible backend at
 base_url: https://api.openai.com/v1
 model: gpt-5.4
 api_key_env: OPENAI_API_KEY
+# Optional provider-specific controls:
+# reasoning_effort: max
+# thinking: true
 ```
 
 The API key is read from the named environment variable and never persisted by

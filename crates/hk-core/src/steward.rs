@@ -74,6 +74,10 @@ struct StewardConfig {
     model: String,
     #[serde(default = "default_api_key_env")]
     api_key_env: String,
+    #[serde(default)]
+    reasoning_effort: Option<String>,
+    #[serde(default)]
+    thinking: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -370,19 +374,9 @@ fn call_openai_compatible(home: &Path, prompt: &str) -> Result<ModelProposal, Hk
          {{\"type\":\"persona_replace\",\"agent\":...,\"file\":string,\"content\":string}}. \
          Never propose memory edits. Do not include secrets. Current safe snapshot: {safe_context}"
     );
-    let body = serde_json::json!({
-        "model": config.model,
-        "temperature": 0,
-        "response_format": {"type": "json_object"},
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt}
-        ]
-    });
+    let body = build_chat_body(&config, system, prompt)?;
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()?;
+    let client = reqwest::blocking::Client::builder().timeout(None).build()?;
     let mut request = client.post(url).json(&body);
     if let Ok(api_key) = std::env::var(&config.api_key_env) {
         request = request.bearer_auth(api_key);
@@ -396,6 +390,39 @@ fn call_openai_compatible(home: &Path, prompt: &str) -> Result<ModelProposal, Hk
     serde_json::from_str(content).map_err(|error| {
         HkError::ConfigCorrupted(format!("model returned invalid proposal JSON: {error}"))
     })
+}
+
+fn build_chat_body(
+    config: &StewardConfig,
+    system: String,
+    prompt: &str,
+) -> Result<serde_json::Value, HkError> {
+    let mut body = serde_json::json!({
+        "model": config.model,
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt}
+        ]
+    });
+    if let Some(effort) = config
+        .reasoning_effort
+        .as_deref()
+        .map(str::trim)
+        .filter(|effort| !effort.is_empty())
+    {
+        if !matches!(effort, "low" | "medium" | "high" | "max") {
+            return Err(HkError::Validation(format!(
+                "unsupported reasoning_effort {effort:?}; expected low, medium, high, or max"
+            )));
+        }
+        body["reasoning_effort"] = effort.into();
+    }
+    if config.thinking {
+        body["thinking"] = serde_json::json!({"type": "enabled"});
+    }
+    Ok(body)
 }
 
 fn safe_model_context(snapshot: brain::BrainSnapshot) -> serde_json::Value {
@@ -1375,6 +1402,20 @@ fn set_json_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_body_includes_provider_reasoning_controls() {
+        let config: StewardConfig = serde_yaml::from_str(
+            "base_url: https://api.deepseek.com/v1\nmodel: deepseek-v4-pro\napi_key_env: DEEPSEEK_API_KEY\nreasoning_effort: max\nthinking: true\n",
+        )
+        .unwrap();
+
+        let body = build_chat_body(&config, "system".into(), "prompt").unwrap();
+
+        assert_eq!(body["model"], "deepseek-v4-pro");
+        assert_eq!(body["reasoning_effort"], "max");
+        assert_eq!(body["thinking"]["type"], "enabled");
+    }
 
     #[test]
     fn deterministic_mcp_prompt_becomes_pending_proposal() {
