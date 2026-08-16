@@ -10,6 +10,14 @@ pub fn brain_snapshot() -> Result<brain::BrainSnapshot, HkError> {
 }
 
 #[tauri::command]
+pub fn steward_chat(
+    prompt: String,
+    history: Vec<steward::StewardChatMessage>,
+) -> Result<steward::StewardChatReply, HkError> {
+    steward::chat(&home_dir()?, &prompt, &history)
+}
+
+#[tauri::command]
 pub fn steward_propose(prompt: String) -> Result<steward::StewardProposal, HkError> {
     steward::propose(&home_dir()?, &prompt)
 }

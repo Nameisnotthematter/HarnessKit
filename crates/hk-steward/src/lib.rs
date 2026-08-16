@@ -7,6 +7,13 @@ struct ProposeRequest {
 }
 
 #[derive(Deserialize)]
+struct ChatRequest {
+    prompt: String,
+    #[serde(default)]
+    history: Vec<hk_core::steward::StewardChatMessage>,
+}
+
+#[derive(Deserialize)]
 struct MemoryEditRequest {
     agent: String,
     path: String,
@@ -17,6 +24,7 @@ pub async fn serve(port: u16) -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/snapshot", get(snapshot))
+        .route("/chat", post(chat))
         .route("/propose", post(propose))
         .route("/propose-memory-edit", post(propose_memory_edit));
     let address = format!("127.0.0.1:{port}");
@@ -35,6 +43,13 @@ async fn propose(
     Json(request): Json<ProposeRequest>,
 ) -> Result<Json<hk_core::steward::StewardProposal>, ServiceError> {
     run_blocking(move || hk_core::steward::propose(&home_dir()?, &request.prompt)).await
+}
+
+async fn chat(
+    Json(request): Json<ChatRequest>,
+) -> Result<Json<hk_core::steward::StewardChatReply>, ServiceError> {
+    run_blocking(move || hk_core::steward::chat(&home_dir()?, &request.prompt, &request.history))
+        .await
 }
 
 async fn propose_memory_edit(

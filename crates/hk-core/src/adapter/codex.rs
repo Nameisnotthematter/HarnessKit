@@ -284,8 +284,10 @@ impl AgentAdapter for CodexAdapter {
                     transport,
                     url,
                     headers: toml_string_map(table, "http_headers"),
-                    // Codex's TOML schema has no agent-native disable concept.
-                    enabled: true,
+                    enabled: table
+                        .and_then(|t| t.get("enabled"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true),
                 }
             })
             .collect()
@@ -482,6 +484,30 @@ args = ["-y", "srv"]
         assert_eq!(figma.headers["X-Figma-Region"], "us-east-1");
         let fs_entry = servers.iter().find(|s| s.name == "fs").unwrap();
         assert_eq!(fs_entry.transport, McpTransport::Stdio);
+    }
+
+    #[test]
+    fn read_mcp_servers_respects_enabled_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config.toml");
+        fs::write(
+            &config,
+            r#"
+[mcp_servers.on]
+command = "on"
+enabled = true
+
+[mcp_servers.off]
+command = "off"
+enabled = false
+"#,
+        )
+        .unwrap();
+        let adapter = CodexAdapter::with_home(tmp.path().to_path_buf());
+        let servers = adapter.read_mcp_servers_from(&config);
+
+        assert!(servers.iter().find(|s| s.name == "on").unwrap().enabled);
+        assert!(!servers.iter().find(|s| s.name == "off").unwrap().enabled);
     }
 
     /// Helper: create a plugin version directory with a manifest

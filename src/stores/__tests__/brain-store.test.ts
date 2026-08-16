@@ -56,11 +56,29 @@ describe("brain-store", () => {
     expect(useBrainStore.getState().proposals).toEqual([proposal]);
   });
 
-  it("creates a proposal without applying it", async () => {
-    vi.mocked(transport).mockResolvedValue(proposal);
+  it("accepts a natural chat reply without creating a proposal", async () => {
+    vi.mocked(transport).mockResolvedValue({
+      message: "Codex uses codegraph.",
+    });
+    await useBrainStore.getState().propose("Which MCP does Codex use?");
+    expect(transport).toHaveBeenCalledWith("steward_chat", {
+      prompt: "Which MCP does Codex use?",
+      history: [],
+    });
+    expect(useBrainStore.getState().proposals).toEqual([]);
+    const messages = useBrainStore.getState().messages;
+    expect(messages[messages.length - 1]?.content).toBe("Codex uses codegraph.");
+  });
+
+  it("adds an optional chat proposal without applying it", async () => {
+    vi.mocked(transport).mockResolvedValue({
+      message: "I prepared a reviewable proposal.",
+      proposal,
+    });
     await useBrainStore.getState().propose("enable data-agent");
-    expect(transport).toHaveBeenCalledWith("steward_propose", {
+    expect(transport).toHaveBeenCalledWith("steward_chat", {
       prompt: "enable data-agent",
+      history: [],
     });
     expect(useBrainStore.getState().proposals).toEqual([proposal]);
   });

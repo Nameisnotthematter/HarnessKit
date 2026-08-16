@@ -35,6 +35,26 @@ pub struct StewardProposal {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StewardChatRole {
+    User,
+    Steward,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StewardChatMessage {
+    pub role: StewardChatRole,
+    pub content: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StewardChatReply {
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposal: Option<StewardProposal>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum ChangeAction {
     SkillsMigrate,
@@ -87,6 +107,12 @@ struct ModelProposal {
     summary: String,
     risk: String,
     actions: Vec<ModelAction>,
+}
+
+struct ParsedChatContent {
+    message: String,
+    proposal: Option<ModelProposal>,
+    proposal_error: Option<String>,
 }
 
 /// External models intentionally cannot deserialize memory actions. Memory
@@ -164,32 +190,92 @@ pub fn propose(home: &Path, prompt: &str) -> Result<StewardProposal, HkError> {
     if prompt.is_empty() {
         return Err(HkError::Validation("Steward prompt cannot be empty".into()));
     }
-    let lower = prompt.to_ascii_lowercase();
-    let model = if lower.contains("skill")
-        && (lower.contains("share")
-            || lower.contains("migrate")
-            || lower.contains("共享")
-            || lower.contains("迁移"))
-    {
-        ModelProposal {
-            title: "Migrate personal Skills to the shared root".into(),
-            summary: "Copy conflict-free personal Skills to ~/.agents/skills and configure Hermes/OpenClaw to load it.".into(),
-            risk: "medium".into(),
-            actions: vec![ModelAction::SkillsMigrate],
-        }
-    } else if let Some(action) = parse_mcp_toggle(prompt) {
-        ModelProposal {
-            title: "Change MCP availability".into(),
-            summary: "Update the secret-free registry and the selected runtime only.".into(),
-            risk: "medium".into(),
-            actions: vec![action],
-        }
-    } else {
-        call_openai_compatible(home, prompt)?
+    let model = match deterministic_model_proposal(prompt) {
+        Some(model) => model,
+        None => call_openai_compatible(home, prompt)?,
     };
     validate_model_proposal(home, &model)?;
     let actions = model.actions.into_iter().map(ChangeAction::from).collect();
     create_proposal(home, model.title, model.summary, model.risk, actions)
+}
+
+pub fn chat(
+    home: &Path,
+    prompt: &str,
+    history: &[StewardChatMessage],
+) -> Result<StewardChatReply, HkError> {
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        return Err(HkError::Validation("Steward prompt cannot be empty".into()));
+    }
+
+    if let Some(model) = deterministic_model_proposal(prompt) {
+        validate_model_proposal(home, &model)?;
+        let actions = model.actions.into_iter().map(ChangeAction::from).collect();
+        let proposal = create_proposal(home, model.title, model.summary, model.risk, actions)?;
+        return Ok(StewardChatReply {
+            message: format!("I prepared a reviewable proposal: {}", proposal.title),
+            proposal: Some(proposal),
+        });
+    }
+
+    let content = call_openai_compatible_chat(home, prompt, history)?;
+    let parsed = parse_chat_content(&content);
+    let mut message = parsed.message;
+    let proposal = match parsed.proposal {
+        Some(model) => match validate_model_proposal(home, &model) {
+            Ok(()) => {
+                let actions = model.actions.into_iter().map(ChangeAction::from).collect();
+                Some(create_proposal(
+                    home,
+                    model.title,
+                    model.summary,
+                    model.risk,
+                    actions,
+                )?)
+            }
+            Err(error) => {
+                append_chat_notice(
+                    &mut message,
+                    &format!("I could not create that proposal safely: {error}"),
+                );
+                None
+            }
+        },
+        None => {
+            if let Some(error) = parsed.proposal_error {
+                append_chat_notice(
+                    &mut message,
+                    &format!("I could not turn the suggested change into a proposal: {error}"),
+                );
+            }
+            None
+        }
+    };
+    if message.trim().is_empty() {
+        message = "I reviewed the agent brains but did not receive a readable answer.".into();
+    }
+    Ok(StewardChatReply { message, proposal })
+}
+
+fn deterministic_model_proposal(prompt: &str) -> Option<ModelProposal> {
+    let lower = prompt.to_ascii_lowercase();
+    if lower.contains("skill")
+        && (lower.contains("migrate") || lower.contains("迁移"))
+    {
+        return Some(ModelProposal {
+            title: "Migrate personal Skills to the shared root".into(),
+            summary: "Copy conflict-free personal Skills to ~/.agents/skills and configure Hermes/OpenClaw to load it.".into(),
+            risk: "medium".into(),
+            actions: vec![ModelAction::SkillsMigrate],
+        });
+    }
+    parse_mcp_toggle(prompt).map(|action| ModelProposal {
+        title: "Change MCP availability".into(),
+        summary: "Update the secret-free registry and the selected runtime only.".into(),
+        risk: "medium".into(),
+        actions: vec![action],
+    })
 }
 
 /// Creates a private memory replacement proposal. The file is not changed
@@ -332,10 +418,18 @@ fn parse_mcp_toggle(prompt: &str) -> Option<ModelAction> {
     if !lower.contains("mcp") {
         return None;
     }
-    let enabled = if lower.contains("disable") || lower.contains("关闭") || lower.contains("禁用")
+    let command = lower.trim_start();
+    let enabled = if command.starts_with("disable ")
+        || command.starts_with("please disable ")
+        || command.starts_with("关闭")
+        || command.starts_with("禁用")
     {
         false
-    } else if lower.contains("enable") || lower.contains("开启") || lower.contains("启用") {
+    } else if command.starts_with("enable ")
+        || command.starts_with("please enable ")
+        || command.starts_with("开启")
+        || command.starts_with("启用")
+    {
         true
     } else {
         return None;
@@ -414,6 +508,110 @@ fn call_openai_compatible(home: &Path, prompt: &str) -> Result<ModelProposal, Hk
     })
 }
 
+fn call_openai_compatible_chat(
+    home: &Path,
+    prompt: &str,
+    history: &[StewardChatMessage],
+) -> Result<String, HkError> {
+    let config_path = home.join(".harnesskit/steward/config.yaml");
+    let raw = fs::read_to_string(&config_path).map_err(|_| {
+        HkError::Validation(format!(
+            "Steward backend is not configured; create {} with base_url, model, and api_key_env",
+            config_path.display()
+        ))
+    })?;
+    let config: StewardConfig =
+        serde_yaml::from_str(&raw).map_err(|error| HkError::ConfigCorrupted(error.to_string()))?;
+    if config.base_url.trim().is_empty() || config.model.trim().is_empty() {
+        return Err(HkError::Validation(
+            "Steward base_url and model are required".into(),
+        ));
+    }
+    let safe_context = safe_model_context(brain::snapshot(home)?);
+    let system = format!(
+        "You are HarnessKit Brain Steward. Talk naturally and answer ordinary questions directly. \
+         You can inspect the current redacted agent-brain snapshot below, including agent configs, \
+         personas, shared Skills, and MCP state. Never claim that a file was changed unless an \
+         approved proposal was applied. Never reveal or request secrets. Memory content is private \
+         and is not present in this context. If and only if the user asks to mutate an agent brain, \
+         explain the change naturally and append one <harnesskit-proposal>...</harnesskit-proposal> \
+         block containing JSON with title, summary, risk, and actions. Allowed actions: \
+         {{\"type\":\"skills_migrate\"}}, \
+         {{\"type\":\"mcp_toggle\",\"server\":string,\"agent\":\"codex|hermes|openclaw\",\"enabled\":bool}}, \
+         {{\"type\":\"config_set\",\"agent\":...,\"key\":string,\"value\":json}}, \
+         {{\"type\":\"persona_replace\",\"agent\":...,\"file\":string,\"content\":string}}. \
+         Never propose memory edits in chat. Current safe snapshot: {safe_context}"
+    );
+    let body = build_free_chat_body(&config, system, history, prompt)?;
+    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+    let client = reqwest::blocking::Client::builder().timeout(None).build()?;
+    let mut request = client.post(url).json(&body);
+    if let Ok(api_key) = std::env::var(&config.api_key_env) {
+        request = request.bearer_auth(api_key);
+    }
+    let response = request.send()?.error_for_status()?;
+    let payload: serde_json::Value = response.json()?;
+    payload
+        .pointer("/choices/0/message/content")
+        .and_then(|value| value.as_str())
+        .map(String::from)
+        .ok_or_else(|| HkError::ConfigCorrupted("model response has no message content".into()))
+}
+
+fn parse_chat_content(content: &str) -> ParsedChatContent {
+    const START: &str = "<harnesskit-proposal>";
+    const END: &str = "</harnesskit-proposal>";
+    let Some(start) = content.find(START) else {
+        return ParsedChatContent {
+            message: content.trim().into(),
+            proposal: None,
+            proposal_error: None,
+        };
+    };
+    let proposal_start = start + START.len();
+    let Some(relative_end) = content[proposal_start..].find(END) else {
+        return ParsedChatContent {
+            message: content.trim().into(),
+            proposal: None,
+            proposal_error: None,
+        };
+    };
+    let end = proposal_start + relative_end;
+    let before = content[..start].trim();
+    let after = content[end + END.len()..].trim();
+    let message = match (before.is_empty(), after.is_empty()) {
+        (false, false) => format!("{before}\n{after}"),
+        (false, true) => before.into(),
+        (true, false) => after.into(),
+        (true, true) => String::new(),
+    };
+    let raw_proposal = content[proposal_start..end].trim();
+    let raw_proposal = raw_proposal
+        .strip_prefix("```json")
+        .and_then(|value| value.strip_suffix("```"))
+        .map(str::trim)
+        .unwrap_or(raw_proposal);
+    match serde_json::from_str(raw_proposal) {
+        Ok(proposal) => ParsedChatContent {
+            message,
+            proposal: Some(proposal),
+            proposal_error: None,
+        },
+        Err(error) => ParsedChatContent {
+            message,
+            proposal: None,
+            proposal_error: Some(error.to_string()),
+        },
+    }
+}
+
+fn append_chat_notice(message: &mut String, notice: &str) {
+    if !message.trim().is_empty() {
+        message.push_str("\n\n");
+    }
+    message.push_str(notice);
+}
+
 fn build_chat_body(
     config: &StewardConfig,
     system: String,
@@ -427,6 +625,49 @@ fn build_chat_body(
             {"role": "system", "content": system},
             {"role": "user", "content": prompt}
         ]
+    });
+    if let Some(effort) = config
+        .reasoning_effort
+        .as_deref()
+        .map(str::trim)
+        .filter(|effort| !effort.is_empty())
+    {
+        if !matches!(effort, "low" | "medium" | "high" | "max") {
+            return Err(HkError::Validation(format!(
+                "unsupported reasoning_effort {effort:?}; expected low, medium, high, or max"
+            )));
+        }
+        body["reasoning_effort"] = effort.into();
+    }
+    if config.thinking {
+        body["thinking"] = serde_json::json!({"type": "enabled"});
+    }
+    Ok(body)
+}
+
+fn build_free_chat_body(
+    config: &StewardConfig,
+    system: String,
+    history: &[StewardChatMessage],
+    prompt: &str,
+) -> Result<serde_json::Value, HkError> {
+    let mut messages = vec![serde_json::json!({"role": "system", "content": system})];
+    messages.extend(history.iter().filter_map(|message| {
+        let content = message.content.trim();
+        if content.is_empty() {
+            return None;
+        }
+        let role = match message.role {
+            StewardChatRole::User => "user",
+            StewardChatRole::Steward => "assistant",
+        };
+        Some(serde_json::json!({"role": role, "content": content}))
+    }));
+    messages.push(serde_json::json!({"role": "user", "content": prompt}));
+    let mut body = serde_json::json!({
+        "model": config.model,
+        "temperature": 0,
+        "messages": messages,
     });
     if let Some(effort) = config
         .reasoning_effort
@@ -1440,6 +1681,66 @@ mod tests {
     }
 
     #[test]
+    fn free_chat_body_accepts_natural_language_and_includes_history() {
+        let config: StewardConfig = serde_yaml::from_str(
+            "base_url: https://api.deepseek.com/v1\nmodel: deepseek-v4-pro\napi_key_env: DEEPSEEK_API_KEY\nreasoning_effort: medium\n",
+        )
+        .unwrap();
+        let history = vec![
+            StewardChatMessage {
+                role: StewardChatRole::User,
+                content: "Which MCPs does Codex use?".into(),
+            },
+            StewardChatMessage {
+                role: StewardChatRole::Steward,
+                content: "Codex uses codegraph.".into(),
+            },
+        ];
+
+        let body = build_free_chat_body(&config, "system".into(), &history, "Why?").unwrap();
+
+        assert!(body.get("response_format").is_none());
+        assert_eq!(body["messages"][1]["role"], "user");
+        assert_eq!(body["messages"][2]["role"], "assistant");
+        assert_eq!(body["messages"][3]["content"], "Why?");
+        assert_eq!(body["reasoning_effort"], "medium");
+    }
+
+    #[test]
+    fn natural_chat_reply_does_not_require_proposal_json() {
+        let parsed = parse_chat_content("Codex currently has four enabled MCP servers.");
+
+        assert_eq!(
+            parsed.message,
+            "Codex currently has four enabled MCP servers."
+        );
+        assert!(parsed.proposal.is_none());
+        assert!(parsed.proposal_error.is_none());
+    }
+
+    #[test]
+    fn optional_proposal_block_is_extracted_from_natural_reply() {
+        let parsed = parse_chat_content(
+            "I can make that change after approval.\n<harnesskit-proposal>\n{\"title\":\"Update Codex persona\",\"summary\":\"Make the response style concise\",\"risk\":\"low\",\"actions\":[{\"type\":\"persona_replace\",\"agent\":\"codex\",\"file\":\"AGENTS.md\",\"content\":\"Be concise.\"}]}\n</harnesskit-proposal>",
+        );
+
+        assert_eq!(parsed.message, "I can make that change after approval.");
+        assert!(parsed.proposal.is_some());
+        assert!(parsed.proposal_error.is_none());
+    }
+
+    #[test]
+    fn malformed_optional_proposal_does_not_break_chat_reply() {
+        let parsed = parse_chat_content(
+            "Here is what I found.\n<harnesskit-proposal>{not-json}</harnesskit-proposal>",
+        );
+
+        assert_eq!(parsed.message, "Here is what I found.");
+        assert!(parsed.proposal.is_none());
+        assert!(parsed.proposal_error.is_some());
+    }
+
+    #[test]
     fn deterministic_mcp_prompt_becomes_pending_proposal() {
         let temp = tempfile::tempdir().unwrap();
         fs::create_dir_all(temp.path().join(".openclaw")).unwrap();
@@ -1452,6 +1753,14 @@ mod tests {
         assert_eq!(proposal.status, "pending");
         assert!(proposal.diff.contains("docs"));
         assert_eq!(list_proposals(temp.path()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn brain_questions_do_not_become_deterministic_proposals() {
+        assert!(deterministic_model_proposal("How do shared skills work?").is_none());
+        assert!(
+            deterministic_model_proposal("Is MCP server data-agent enabled for codex?").is_none()
+        );
     }
 
     #[test]

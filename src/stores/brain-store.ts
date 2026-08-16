@@ -72,6 +72,11 @@ export interface StewardMessage {
   content: string;
 }
 
+interface StewardChatReply {
+  message: string;
+  proposal?: StewardProposal;
+}
+
 interface BrainState {
   snapshot: BrainSnapshot | null;
   proposals: StewardProposal[];
@@ -126,6 +131,11 @@ export const useBrainStore = create<BrainState>((set, get) => ({
     const content = prompt.trim();
     if (!content || get().proposing) return;
 
+    const history = get().messages.map((message) => ({
+      role: message.role,
+      content: message.content,
+    }));
+
     const userMessage: StewardMessage = {
       id: messageId(),
       role: "user",
@@ -138,18 +148,21 @@ export const useBrainStore = create<BrainState>((set, get) => ({
     }));
 
     try {
-      const proposal = await transport<StewardProposal>("steward_propose", {
+      const reply = await transport<StewardChatReply>("steward_chat", {
         prompt: content,
+        history,
       });
       set((state) => ({
         proposing: false,
-        proposals: [proposal, ...state.proposals],
+        proposals: reply.proposal
+          ? [reply.proposal, ...state.proposals]
+          : state.proposals,
         messages: [
           ...state.messages,
           {
             id: messageId(),
             role: "steward",
-            content: `Proposal ready: ${proposal.title}`,
+            content: reply.message,
           },
         ],
       }));

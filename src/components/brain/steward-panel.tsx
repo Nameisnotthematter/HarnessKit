@@ -44,8 +44,8 @@ export function StewardPanel({
         <h2 className="font-semibold">Brain Steward</h2>
       </div>
       <p className="mt-1 text-xs text-muted-foreground">
-        Describe a change. Steward returns a reviewable proposal before anything
-        is written.
+        Chat freely about the agent brains. Requested changes still become
+        reviewable proposals before anything is written.
       </p>
 
       {messages.length > 0 && (
@@ -70,7 +70,7 @@ export function StewardPanel({
               submit();
           }}
           rows={2}
-          placeholder="Ask Steward to align a skill, persona rule, config, or MCP connection…"
+          placeholder="Ask anything about your agent brains, or request a change…"
           className="min-h-16 flex-1 resize-y rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30"
         />
         <button
@@ -82,7 +82,7 @@ export function StewardPanel({
           {proposing && (
             <Loader2 size={13} className="mr-1 inline animate-spin" />
           )}
-          提交审批
+          发送
         </button>
       </div>
 

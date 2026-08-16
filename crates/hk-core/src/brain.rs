@@ -405,61 +405,65 @@ fn snapshot_mcp(
     home: &Path,
     adapters: &[Box<dyn AgentAdapter>],
 ) -> Result<Vec<McpRegistryView>, HkError> {
-    let registry_path = home.join(".harnesskit/shared/mcp-registry.yaml");
-    if registry_path.exists() {
-        let registry = shared::load_mcp_registry(&registry_path)
-            .map_err(|error| HkError::ConfigCorrupted(error.to_string()))?;
-        return registry
-            .servers
-            .iter()
-            .map(|(name, server)| {
-                let agents: BTreeMap<String, bool> = BRAIN_AGENTS
-                    .iter()
-                    .map(|agent| {
-                        let enabled = registry
-                            .plan_for_agent(agent)
-                            .map(|plan| plan.servers.contains_key(name))
-                            .unwrap_or(false);
-                        ((*agent).into(), enabled)
-                    })
-                    .collect();
-                let status = if agents.values().any(|enabled| *enabled) {
-                    "configured"
-                } else {
-                    "disabled"
-                };
-                Ok(McpRegistryView {
-                    id: name.clone(),
-                    name: name.clone(),
-                    description: "Managed by the central secret-free registry".into(),
-                    transport: if server.url.is_some() {
-                        "http"
-                    } else {
-                        "stdio"
-                    }
-                    .into(),
-                    agents,
-                    status: status.into(),
-                })
-            })
-            .collect();
-    }
-
     let mut discovered: BTreeMap<String, (McpTransport, BTreeMap<String, bool>)> = BTreeMap::new();
+    let mut native_agents: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for adapter in adapters {
         for server in adapter.read_mcp_servers() {
+            native_agents
+                .entry(server.name.clone())
+                .or_default()
+                .insert(adapter.name().into());
             let row = discovered
                 .entry(server.name)
                 .or_insert_with(|| (server.transport, default_agent_flags()));
             row.1.insert(adapter.name().into(), server.enabled);
         }
     }
+
+    let registry_path = home.join(".harnesskit/shared/mcp-registry.yaml");
+    let mut managed = BTreeSet::new();
+    if registry_path.exists() {
+        let registry = shared::load_mcp_registry(&registry_path)
+            .map_err(|error| HkError::ConfigCorrupted(error.to_string()))?;
+        for (name, server) in &registry.servers {
+            managed.insert(name.clone());
+            let transport = if server.url.is_some() {
+                McpTransport::Http
+            } else {
+                McpTransport::Stdio
+            };
+            let row = discovered
+                .entry(name.clone())
+                .or_insert_with(|| (transport, default_agent_flags()));
+            row.0 = transport;
+            for agent in BRAIN_AGENTS {
+                if let Some(enabled) = registry
+                    .agents
+                    .get(*agent)
+                    .and_then(|config| config.enabled.get(name))
+                {
+                    row.1.insert((*agent).into(), *enabled);
+                } else if !native_agents
+                    .get(name)
+                    .is_some_and(|agents| agents.contains(*agent))
+                {
+                    row.1.insert((*agent).into(), server.enabled_by_default);
+                }
+            }
+        }
+    }
+
     Ok(discovered
         .into_iter()
         .map(|(name, (transport, agents))| McpRegistryView {
             id: name.clone(),
+            description: if managed.contains(&name) {
+                "Managed by the central secret-free registry"
+            } else {
+                "Discovered in native config; adopt before cross-agent deployment"
+            }
+            .into(),
             name,
-            description: "Discovered in native config; adopt before cross-agent deployment".into(),
             transport: match transport {
                 McpTransport::Stdio => "stdio",
                 McpTransport::Http => "http",
@@ -527,6 +531,60 @@ mod tests {
         let entries = snapshot_mcp(temp.path(), &adapters).unwrap();
 
         assert_eq!(entries[0].status, "configured");
+    }
+
+    #[test]
+    fn shared_registry_merges_with_native_mcp_discovery() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".openclaw")).unwrap();
+        fs::write(
+            temp.path().join(".openclaw/openclaw.json"),
+            r#"{"mcp":{"servers":{"native-only":{"command":"native-mcp","enabled":true},"shared":{"command":"shared-mcp","enabled":true}}}}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(temp.path().join(".harnesskit/shared")).unwrap();
+        fs::write(
+            temp.path().join(".harnesskit/shared/mcp-registry.yaml"),
+            r#"version: 1
+servers:
+  registry-only:
+    command: registry-mcp
+  shared:
+    command: shared-mcp
+    enabled_by_default: false
+agents:
+  codex:
+    enabled:
+      registry-only: true
+      shared: false
+"#,
+        )
+        .unwrap();
+
+        let adapters = adapters_for_home(temp.path());
+        let entries = snapshot_mcp(temp.path(), &adapters).unwrap();
+
+        let names = entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["native-only", "registry-only", "shared"]);
+        let native = entries
+            .iter()
+            .find(|entry| entry.name == "native-only")
+            .unwrap();
+        assert!(native.agents["openclaw"]);
+        let registry = entries
+            .iter()
+            .find(|entry| entry.name == "registry-only")
+            .unwrap();
+        assert!(registry.agents["codex"]);
+        let shared = entries
+            .iter()
+            .find(|entry| entry.name == "shared")
+            .unwrap();
+        assert!(!shared.agents["codex"]);
+        assert!(shared.agents["openclaw"]);
     }
 
     #[test]

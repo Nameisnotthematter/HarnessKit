@@ -150,6 +150,24 @@ async fn steward_reject_route_reaches_handler() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
+#[tokio::test]
+async fn steward_chat_route_reaches_handler() {
+    let (state, _tmp) = test_state();
+    let app = hk_web::router::build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::post("/api/steward_chat")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"prompt":"","history":[]}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
 /// Regression guard for the web-mode Kits outage: the frontend transport posts
 /// to `/api/{command}` (e.g. `/api/list_kit_asset_candidates`), but the kit
 /// routes were once registered REST-style (`GET /api/kits/candidates`). The

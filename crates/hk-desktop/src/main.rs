@@ -77,6 +77,7 @@ fn main() {
             commands::reveal_in_file_manager,
             commands::list_agent_configs,
             commands::brain_snapshot,
+            commands::steward_chat,
             commands::steward_propose,
             commands::steward_propose_memory_edit,
             commands::steward_approve,

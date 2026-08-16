@@ -19,6 +19,19 @@ pub struct ProposeParams {
     pub prompt: String,
 }
 
+#[derive(Deserialize)]
+pub struct ChatParams {
+    pub prompt: String,
+    #[serde(default)]
+    pub history: Vec<hk_core::steward::StewardChatMessage>,
+}
+
+pub async fn steward_chat(
+    Json(params): Json<ChatParams>,
+) -> Result<hk_core::steward::StewardChatReply> {
+    blocking(move || hk_core::steward::chat(&home_dir()?, &params.prompt, &params.history)).await
+}
+
 pub async fn steward_propose(
     Json(params): Json<ProposeParams>,
 ) -> Result<hk_core::steward::StewardProposal> {

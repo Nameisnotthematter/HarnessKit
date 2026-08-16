@@ -104,6 +104,7 @@ pub fn build_router(state: WebState) -> Router {
         .route("/api/remove_custom_config_path", post(handlers::agents::remove_custom_config_path))
         // Brain Steward — mutations are created first, then explicitly approved or rejected.
         .route("/api/brain_snapshot", post(handlers::brain::brain_snapshot))
+        .route("/api/steward_chat", post(handlers::brain::steward_chat))
         .route("/api/steward_propose", post(handlers::brain::steward_propose))
         .route(
             "/api/steward_propose_memory_edit",
