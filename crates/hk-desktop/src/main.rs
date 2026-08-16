@@ -78,6 +78,7 @@ fn main() {
             commands::list_agent_configs,
             commands::brain_snapshot,
             commands::steward_propose,
+            commands::steward_propose_memory_edit,
             commands::steward_approve,
             commands::read_config_file_preview,
             commands::scan_git_repo,

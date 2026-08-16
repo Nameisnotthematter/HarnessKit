@@ -6,11 +6,19 @@ struct ProposeRequest {
     prompt: String,
 }
 
+#[derive(Deserialize)]
+struct MemoryEditRequest {
+    agent: String,
+    path: String,
+    content: String,
+}
+
 pub async fn serve(port: u16) -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/snapshot", get(snapshot))
-        .route("/propose", post(propose));
+        .route("/propose", post(propose))
+        .route("/propose-memory-edit", post(propose_memory_edit));
     let address = format!("127.0.0.1:{port}");
     let listener = tokio::net::TcpListener::bind(&address).await?;
     eprintln!("Brain Steward proposal service listening at http://{address}");
@@ -27,6 +35,20 @@ async fn propose(
     Json(request): Json<ProposeRequest>,
 ) -> Result<Json<hk_core::steward::StewardProposal>, ServiceError> {
     run_blocking(move || hk_core::steward::propose(&home_dir()?, &request.prompt)).await
+}
+
+async fn propose_memory_edit(
+    Json(request): Json<MemoryEditRequest>,
+) -> Result<Json<hk_core::steward::StewardProposal>, ServiceError> {
+    run_blocking(move || {
+        hk_core::steward::propose_memory_edit(
+            &home_dir()?,
+            &request.agent,
+            &request.path,
+            &request.content,
+        )
+    })
+    .await
 }
 
 fn home_dir() -> Result<std::path::PathBuf, hk_core::HkError> {

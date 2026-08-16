@@ -1,4 +1,10 @@
-import { CheckCircle2, CircleOff, FileText, LockKeyhole } from "lucide-react";
+import {
+  CheckCircle2,
+  CircleOff,
+  FileText,
+  LockKeyhole,
+  Pencil,
+} from "lucide-react";
 import { useState } from "react";
 import type { BrainAgent, BrainSectionKind } from "@/stores/brain-store";
 
@@ -8,9 +14,39 @@ const sections: { id: BrainSectionKind; label: string }[] = [
   { id: "memory", label: "Memory" },
 ];
 
-export function AgentBrainCard({ agent }: { agent: BrainAgent }) {
+interface AgentBrainCardProps {
+  agent: BrainAgent;
+  proposing?: boolean;
+  onProposeMemoryEdit?: (
+    agent: BrainAgent["id"],
+    path: string,
+    content: string,
+  ) => Promise<boolean>;
+}
+
+export function AgentBrainCard({
+  agent,
+  proposing = false,
+  onProposeMemoryEdit,
+}: AgentBrainCardProps) {
   const [section, setSection] = useState<BrainSectionKind>("config");
+  const [editingPath, setEditingPath] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
   const files = agent[section];
+
+  const beginMemoryEdit = (path: string, content: string) => {
+    setEditingPath(path);
+    setDraft(content);
+  };
+
+  const createMemoryProposal = async () => {
+    if (!editingPath || !onProposeMemoryEdit) return;
+    const created = await onProposeMemoryEdit(agent.id, editingPath, draft);
+    if (created) {
+      setEditingPath(null);
+      setDraft("");
+    }
+  };
 
   return (
     <article className="min-w-0 rounded-xl border border-border bg-card shadow-sm">
@@ -57,7 +93,8 @@ export function AgentBrainCard({ agent }: { agent: BrainAgent }) {
         <div className="mx-3 mt-3 flex gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5 text-xs text-amber-700 dark:text-amber-300">
           <LockKeyhole size={14} className="mt-0.5 shrink-0" />
           <span>
-            Read-only. Memory is private to this agent and never shared.
+            Private and isolated. Memory stays with this agent and is never
+            shared. Edits require approval.
           </span>
         </div>
       )}
@@ -86,6 +123,18 @@ export function AgentBrainCard({ agent }: { agent: BrainAgent }) {
                     missing
                   </span>
                 )}
+                {section === "memory" && file.exists && !file.read_only && (
+                  <button
+                    type="button"
+                    disabled={proposing}
+                    onClick={() =>
+                      beginMemoryEdit(file.path, file.content ?? "")
+                    }
+                    className="ml-auto flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] hover:bg-muted disabled:opacity-50"
+                  >
+                    <Pencil size={11} /> Edit
+                  </button>
+                )}
               </div>
               <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
                 {file.summary}
@@ -93,6 +142,39 @@ export function AgentBrainCard({ agent }: { agent: BrainAgent }) {
               <p className="mt-1.5 truncate font-mono text-[10px] text-muted-foreground/80">
                 {file.path}
               </p>
+              {section === "memory" && editingPath === file.path && (
+                <div className="mt-2 space-y-2 rounded-lg border border-border bg-muted/30 p-2">
+                  <textarea
+                    aria-label={`Edit ${file.label}`}
+                    value={draft}
+                    disabled={proposing}
+                    onChange={(event) => setDraft(event.target.value)}
+                    rows={8}
+                    className="w-full resize-y rounded-md border border-border bg-background p-2 font-mono text-xs outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
+                  />
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      disabled={proposing}
+                      onClick={() => {
+                        setEditingPath(null);
+                        setDraft("");
+                      }}
+                      className="rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-muted disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={proposing}
+                      onClick={createMemoryProposal}
+                      className="rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                    >
+                      Create proposal
+                    </button>
+                  </div>
+                </div>
+              )}
               {file.content && (
                 <details className="mt-2">
                   <summary className="cursor-pointer text-xs font-medium text-primary">

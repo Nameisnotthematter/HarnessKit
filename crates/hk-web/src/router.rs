@@ -105,6 +105,10 @@ pub fn build_router(state: WebState) -> Router {
         // Brain Steward — mutations are created first, then explicitly approved.
         .route("/api/brain_snapshot", post(handlers::brain::brain_snapshot))
         .route("/api/steward_propose", post(handlers::brain::steward_propose))
+        .route(
+            "/api/steward_propose_memory_edit",
+            post(handlers::brain::steward_propose_memory_edit),
+        )
         .route("/api/steward_approve", post(handlers::brain::steward_approve))
         // Audit
         .route("/api/list_audit_results", post(handlers::audit::list_audit_results))

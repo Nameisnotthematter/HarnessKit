@@ -57,6 +57,31 @@ describe("brain-store", () => {
     expect(useBrainStore.getState().proposals).toEqual([proposal]);
   });
 
+  it("creates a private memory proposal with the exact edit payload", async () => {
+    const memoryProposal = {
+      ...proposal,
+      id: "memory-p1",
+      title: "Edit MEMORY.md",
+    };
+    vi.mocked(transport).mockResolvedValue(memoryProposal);
+    useBrainStore.setState({ proposals: [proposal] });
+
+    const created = await useBrainStore
+      .getState()
+      .proposeMemoryEdit("hermes", "/private/MEMORY.md", "exact\ncontent\n");
+
+    expect(created).toBe(true);
+    expect(transport).toHaveBeenCalledWith("steward_propose_memory_edit", {
+      agent: "hermes",
+      path: "/private/MEMORY.md",
+      content: "exact\ncontent\n",
+    });
+    expect(useBrainStore.getState().proposals).toEqual([
+      memoryProposal,
+      proposal,
+    ]);
+  });
+
   it("applies only through steward_approve and refreshes", async () => {
     const approved = { ...proposal, status: "approved" as const };
     useBrainStore.setState({ proposals: [proposal] });

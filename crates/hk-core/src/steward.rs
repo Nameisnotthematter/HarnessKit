@@ -12,6 +12,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const REGISTRY_RELATIVE: &str = ".harnesskit/shared/mcp-registry.yaml";
+pub const MAX_MEMORY_EDIT_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StewardValidation {
@@ -52,6 +53,11 @@ enum ChangeAction {
         file: String,
         content: String,
     },
+    MemoryReplace {
+        agent: String,
+        path: String,
+        content: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -76,7 +82,58 @@ struct ModelProposal {
     title: String,
     summary: String,
     risk: String,
-    actions: Vec<ChangeAction>,
+    actions: Vec<ModelAction>,
+}
+
+/// External models intentionally cannot deserialize memory actions. Memory
+/// edits enter through `propose_memory_edit`, which validates an exact agent
+/// and target path before creating the internal typed action.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum ModelAction {
+    SkillsMigrate,
+    McpToggle {
+        server: String,
+        agent: String,
+        enabled: bool,
+    },
+    ConfigSet {
+        agent: String,
+        key: String,
+        value: serde_json::Value,
+    },
+    PersonaReplace {
+        agent: String,
+        file: String,
+        content: String,
+    },
+}
+
+impl From<ModelAction> for ChangeAction {
+    fn from(action: ModelAction) -> Self {
+        match action {
+            ModelAction::SkillsMigrate => Self::SkillsMigrate,
+            ModelAction::McpToggle {
+                server,
+                agent,
+                enabled,
+            } => Self::McpToggle {
+                server,
+                agent,
+                enabled,
+            },
+            ModelAction::ConfigSet { agent, key, value } => Self::ConfigSet { agent, key, value },
+            ModelAction::PersonaReplace {
+                agent,
+                file,
+                content,
+            } => Self::PersonaReplace {
+                agent,
+                file,
+                content,
+            },
+        }
+    }
 }
 
 fn default_api_key_env() -> String {
@@ -114,7 +171,7 @@ pub fn propose(home: &Path, prompt: &str) -> Result<StewardProposal, HkError> {
             title: "Migrate personal Skills to the shared root".into(),
             summary: "Copy conflict-free personal Skills to ~/.agents/skills and configure Hermes/OpenClaw to load it.".into(),
             risk: "medium".into(),
-            actions: vec![ChangeAction::SkillsMigrate],
+            actions: vec![ModelAction::SkillsMigrate],
         }
     } else if let Some(action) = parse_mcp_toggle(prompt) {
         ModelProposal {
@@ -127,18 +184,57 @@ pub fn propose(home: &Path, prompt: &str) -> Result<StewardProposal, HkError> {
         call_openai_compatible(home, prompt)?
     };
     validate_model_proposal(home, &model)?;
-    let source_hashes = source_hashes(home, &model.actions)?;
+    let actions = model.actions.into_iter().map(ChangeAction::from).collect();
+    create_proposal(home, model.title, model.summary, model.risk, actions)
+}
+
+/// Creates a private memory replacement proposal. The file is not changed
+/// until the returned proposal is passed to `approve`.
+pub fn propose_memory_edit(
+    home: &Path,
+    agent: &str,
+    path: &str,
+    content: &str,
+) -> Result<StewardProposal, HkError> {
+    if content.len() > MAX_MEMORY_EDIT_BYTES {
+        return Err(HkError::Validation("memory content is too large".into()));
+    }
+    let target = memory_path(home, agent, path)?;
+    create_proposal(
+        home,
+        format!("Edit private {agent} memory"),
+        format!("Replace {} after explicit approval.", target.display()),
+        "high".into(),
+        vec![ChangeAction::MemoryReplace {
+            agent: agent.into(),
+            path: target.to_string_lossy().into_owned(),
+            content: content.into(),
+        }],
+    )
+}
+
+fn create_proposal(
+    home: &Path,
+    title: String,
+    summary: String,
+    risk: String,
+    actions: Vec<ChangeAction>,
+) -> Result<StewardProposal, HkError> {
+    let source_hashes = source_hashes(home, &actions)?;
     let proposal = StewardProposal {
         id: uuid::Uuid::new_v4().to_string(),
-        title: model.title,
-        summary: model.summary,
-        diff: render_diff(&model.actions),
-        risk: normalize_risk(&model.risk).into(),
+        title,
+        summary,
+        diff: render_diff(&actions),
+        risk: normalize_risk(&risk).into(),
         validations: vec![
             StewardValidation {
                 label: "Typed action schema".into(),
                 status: "pass".into(),
-                detail: Some("Only known config, persona, and MCP actions are accepted".into()),
+                detail: Some(
+                    "Only known config, persona, MCP, and explicit memory actions are accepted"
+                        .into(),
+                ),
             },
             StewardValidation {
                 label: "Optimistic concurrency".into(),
@@ -148,7 +244,10 @@ pub fn propose(home: &Path, prompt: &str) -> Result<StewardProposal, HkError> {
             StewardValidation {
                 label: "Memory isolation".into(),
                 status: "pass".into(),
-                detail: Some("Memory is neither editable nor sent to the model".into()),
+                detail: Some(
+                    "Memory is omitted from model context and edits require explicit approval"
+                        .into(),
+                ),
             },
         ],
         status: "pending".into(),
@@ -156,7 +255,7 @@ pub fn propose(home: &Path, prompt: &str) -> Result<StewardProposal, HkError> {
     };
     let stored = StoredProposal {
         proposal: proposal.clone(),
-        actions: model.actions,
+        actions,
         source_hashes,
     };
     save_stored(home, &stored)?;
@@ -202,7 +301,7 @@ pub fn approve(home: &Path, proposal_id: &str) -> Result<StewardProposal, HkErro
     }
 }
 
-fn parse_mcp_toggle(prompt: &str) -> Option<ChangeAction> {
+fn parse_mcp_toggle(prompt: &str) -> Option<ModelAction> {
     let lower = prompt.to_ascii_lowercase();
     if !lower.contains("mcp") {
         return None;
@@ -231,7 +330,7 @@ fn parse_mcp_toggle(prompt: &str) -> Option<ChangeAction> {
     if server.is_empty() {
         return None;
     }
-    Some(ChangeAction::McpToggle {
+    Some(ModelAction::McpToggle {
         server,
         agent: agent.into(),
         enabled,
@@ -325,7 +424,7 @@ fn validate_model_proposal(home: &Path, model: &ModelProposal) -> Result<(), HkE
     }
     for action in &model.actions {
         match action {
-            ChangeAction::SkillsMigrate => {
+            ModelAction::SkillsMigrate => {
                 let plan = shared_skill_plan(home)?;
                 if plan
                     .items
@@ -337,13 +436,13 @@ fn validate_model_proposal(home: &Path, model: &ModelProposal) -> Result<(), HkE
                     ));
                 }
             }
-            ChangeAction::McpToggle { server, agent, .. } => {
+            ModelAction::McpToggle { server, agent, .. } => {
                 validate_agent(agent)?;
                 if server.is_empty() || server.contains(['/', '\\']) {
                     return Err(HkError::Validation("invalid MCP server name".into()));
                 }
             }
-            ChangeAction::ConfigSet { agent, key, .. } => {
+            ModelAction::ConfigSet { agent, key, .. } => {
                 validate_agent(agent)?;
                 if !known_config_keys(agent).contains(&key.as_str()) {
                     return Err(HkError::Validation(format!(
@@ -351,14 +450,14 @@ fn validate_model_proposal(home: &Path, model: &ModelProposal) -> Result<(), HkE
                     )));
                 }
             }
-            ChangeAction::PersonaReplace {
+            ModelAction::PersonaReplace {
                 agent,
                 file,
                 content,
             } => {
                 validate_agent(agent)?;
                 persona_path(Path::new("/"), agent, file)?;
-                if content.len() > 256 * 1024 {
+                if content.len() > MAX_MEMORY_EDIT_BYTES {
                     return Err(HkError::Validation("persona content is too large".into()));
                 }
             }
@@ -410,6 +509,9 @@ fn action_targets(home: &Path, actions: &[ChangeAction]) -> Result<Vec<PathBuf>,
             ChangeAction::PersonaReplace { agent, file, .. } => {
                 paths.push(persona_path(home, agent, file)?)
             }
+            ChangeAction::MemoryReplace { agent, path, .. } => {
+                paths.push(memory_path(home, agent, path)?)
+            }
         }
     }
     paths.sort();
@@ -447,6 +549,16 @@ fn apply_actions(home: &Path, actions: &[ChangeAction]) -> Result<(), HkError> {
                 file,
                 content,
             } => atomic_write(&persona_path(home, agent, file)?, content.as_bytes())?,
+            ChangeAction::MemoryReplace {
+                agent,
+                path,
+                content,
+            } => {
+                if content.len() > MAX_MEMORY_EDIT_BYTES {
+                    return Err(HkError::Validation("memory content is too large".into()));
+                }
+                atomic_write(&memory_path(home, agent, path)?, content.as_bytes())?
+            }
         }
     }
     Ok(())
@@ -830,11 +942,117 @@ fn openclaw_workspace(home: &Path) -> Result<PathBuf, HkError> {
                 .and_then(|value| value.as_str())
                 .map(String::from)
         });
-    Ok(match configured {
+    let workspace = match configured {
         Some(path) if path.starts_with("~/") => home.join(path.trim_start_matches("~/")),
         Some(path) if Path::new(&path).is_absolute() => PathBuf::from(path),
         _ => home.join(".openclaw/workspace"),
-    })
+    };
+    if workspace.starts_with(home.join(".codex")) || workspace.starts_with(home.join(".hermes")) {
+        return Err(HkError::Validation(
+            "OpenClaw workspace cannot overlap another agent's private directory".into(),
+        ));
+    }
+    Ok(workspace)
+}
+
+fn memory_path(home: &Path, agent: &str, requested: &str) -> Result<PathBuf, HkError> {
+    validate_agent(agent)?;
+    let target = PathBuf::from(requested);
+    if !target.is_absolute()
+        || target.components().any(|component| {
+            !matches!(
+                component,
+                std::path::Component::RootDir | std::path::Component::Normal(_)
+            )
+        })
+    {
+        return Err(HkError::Validation(
+            "memory path must be an absolute path without traversal".into(),
+        ));
+    }
+
+    let (root, standalone, recursive, markdown_only) = match agent {
+        "codex" => (home.join(".codex/memories"), None, false, true),
+        "hermes" => (home.join(".hermes/memories"), None, false, false),
+        "openclaw" => {
+            let workspace = openclaw_workspace(home)?;
+            (
+                workspace.join("memory"),
+                Some(workspace.join("MEMORY.md")),
+                true,
+                true,
+            )
+        }
+        _ => unreachable!(),
+    };
+    let in_root = if recursive {
+        target.starts_with(&root) && target != root
+    } else {
+        target.parent() == Some(root.as_path())
+    };
+    if !in_root && standalone.as_ref() != Some(&target) {
+        return Err(HkError::Validation(format!(
+            "memory path does not belong to {agent}"
+        )));
+    }
+    if markdown_only && target.extension().and_then(|ext| ext.to_str()) != Some("md") {
+        return Err(HkError::Validation(format!(
+            "{agent} memory target must be a Markdown file"
+        )));
+    }
+
+    let symlink_anchor = if standalone.as_deref() == Some(target.as_path()) {
+        target.parent().unwrap_or(&root)
+    } else {
+        &root
+    };
+    reject_symlink_components(symlink_anchor, &target)?;
+    if target.exists() {
+        let adapter = brain::adapters_for_home(home)
+            .into_iter()
+            .find(|adapter| adapter.name() == agent)
+            .ok_or_else(|| HkError::Validation(format!("unknown agent {agent}")))?;
+        if !adapter.global_memory_files().contains(&target) {
+            return Err(HkError::Validation(format!(
+                "memory path is not discovered for {agent}"
+            )));
+        }
+    }
+    Ok(target)
+}
+
+fn reject_symlink_components(root: &Path, target: &Path) -> Result<(), HkError> {
+    let relative = target
+        .strip_prefix(root)
+        .map_err(|_| HkError::Validation("memory path is outside its memory root".into()))?;
+    let mut current = root.to_path_buf();
+    if fs::symlink_metadata(&current).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(HkError::Validation(format!(
+            "memory root is a symlink: {}",
+            current.display()
+        )));
+    }
+    for component in relative.components() {
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(HkError::Validation(format!(
+                    "memory path crosses symlink {}",
+                    current.display()
+                )));
+            }
+            Ok(metadata) if current != target && !metadata.is_dir() => {
+                return Err(HkError::Validation(format!(
+                    "memory path parent is not a directory: {}",
+                    current.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
 }
 
 fn validate_agent(agent: &str) -> Result<(), HkError> {
@@ -869,6 +1087,14 @@ fn render_diff(actions: &[ChangeAction]) -> String {
                 content,
             } => format!(
                 "~ {agent}.persona.{file}: replace with {} bytes",
+                content.len()
+            ),
+            ChangeAction::MemoryReplace {
+                agent,
+                path,
+                content,
+            } => format!(
+                "~ {agent}.memory.{path}: replace with {} bytes",
                 content.len()
             ),
         })
@@ -1171,7 +1397,7 @@ mod tests {
             title: "bad".into(),
             summary: "bad".into(),
             risk: "low".into(),
-            actions: vec![ChangeAction::ConfigSet {
+            actions: vec![ModelAction::ConfigSet {
                 agent: "codex".into(),
                 key: "auth.token".into(),
                 value: "secret".into(),
@@ -1179,6 +1405,139 @@ mod tests {
         };
         assert!(validate_model_proposal(Path::new("/tmp"), &model).is_err());
         assert!(persona_path(Path::new("/tmp"), "openclaw", "MEMORY.md").is_err());
+    }
+
+    #[test]
+    fn external_model_schema_rejects_memory_actions() {
+        let raw = r#"{
+            "title":"bad",
+            "summary":"bad",
+            "risk":"low",
+            "actions":[{
+                "type":"memory_replace",
+                "agent":"codex",
+                "path":"/tmp/MEMORY.md",
+                "content":"private"
+            }]
+        }"#;
+        assert!(serde_json::from_str::<ModelProposal>(raw).is_err());
+    }
+
+    #[test]
+    fn memory_paths_are_scoped_to_each_agent() {
+        let temp = tempfile::tempdir().unwrap();
+        let cases = [
+            ("codex", temp.path().join(".codex/memories/codex.md")),
+            ("hermes", temp.path().join(".hermes/memories/hermes.md")),
+            (
+                "openclaw",
+                temp.path().join(".openclaw/workspace/memory/openclaw.md"),
+            ),
+        ];
+        for (_, path) in &cases {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "old").unwrap();
+        }
+
+        for (agent, path) in &cases {
+            assert_eq!(
+                memory_path(temp.path(), agent, path.to_str().unwrap()).unwrap(),
+                path.clone()
+            );
+        }
+
+        assert!(memory_path(temp.path(), "codex", cases[1].1.to_str().unwrap()).is_err());
+        let traversal = format!(
+            "{}/../config.toml",
+            temp.path().join(".codex/memories").display()
+        );
+        assert!(memory_path(temp.path(), "codex", &traversal).is_err());
+        assert!(memory_path(temp.path(), "unknown", cases[0].1.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn openclaw_memory_rejects_another_agents_private_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".openclaw")).unwrap();
+        let workspace = temp.path().join(".hermes/memories");
+        fs::write(
+            temp.path().join(".openclaw/openclaw.json"),
+            serde_json::json!({
+                "agents": {"defaults": {"workspace": workspace}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert!(memory_path(
+            temp.path(),
+            "openclaw",
+            temp.path()
+                .join(".hermes/memories/MEMORY.md")
+                .to_str()
+                .unwrap(),
+        )
+        .is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn memory_path_rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let outside = temp.path().join("outside");
+        let memory = temp.path().join(".openclaw/workspace/memory");
+        fs::create_dir_all(&outside).unwrap();
+        fs::create_dir_all(&memory).unwrap();
+        fs::write(outside.join("private.md"), "old").unwrap();
+        symlink(&outside, memory.join("escape")).unwrap();
+
+        assert!(memory_path(
+            temp.path(),
+            "openclaw",
+            memory.join("escape/private.md").to_str().unwrap()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn approved_memory_edit_uses_steward_write_flow() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(".hermes/memories/MEMORY.md");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "old memory").unwrap();
+
+        let proposal =
+            propose_memory_edit(temp.path(), "hermes", path.to_str().unwrap(), "new memory")
+                .unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "old memory");
+
+        let approved = approve(temp.path(), &proposal.id).unwrap();
+        assert_eq!(approved.status, "approved");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new memory");
+        assert!(temp
+            .path()
+            .join(".harnesskit/backups")
+            .join(&proposal.id)
+            .exists());
+        let audit =
+            fs::read_to_string(temp.path().join(".harnesskit/steward/audit.jsonl")).unwrap();
+        assert!(audit.contains("\"event\":\"proposed\""));
+        assert!(audit.contains("\"event\":\"approved\""));
+    }
+
+    #[test]
+    fn memory_edit_rejects_oversized_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(".codex/memories/MEMORY.md");
+        assert!(propose_memory_edit(
+            temp.path(),
+            "codex",
+            path.to_str().unwrap(),
+            &"x".repeat(256 * 1024 + 1),
+        )
+        .is_err());
     }
 
     #[test]

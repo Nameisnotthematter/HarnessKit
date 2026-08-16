@@ -21,6 +21,7 @@ export default function BrainPage() {
     error,
     fetchSnapshot,
     propose,
+    proposeMemoryEdit,
     approve,
   } = useBrainStore();
 
@@ -77,7 +78,12 @@ export default function BrainPage() {
         <div className="space-y-5">
           <section className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
             {snapshot.agents.map((agent) => (
-              <AgentBrainCard key={agent.id} agent={agent} />
+              <AgentBrainCard
+                key={agent.id}
+                agent={agent}
+                proposing={proposing}
+                onProposeMemoryEdit={proposeMemoryEdit}
+              />
             ))}
           </section>
 

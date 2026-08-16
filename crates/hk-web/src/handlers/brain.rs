@@ -26,6 +26,27 @@ pub async fn steward_propose(
 }
 
 #[derive(Deserialize)]
+pub struct MemoryEditParams {
+    pub agent: String,
+    pub path: String,
+    pub content: String,
+}
+
+pub async fn steward_propose_memory_edit(
+    Json(params): Json<MemoryEditParams>,
+) -> Result<hk_core::steward::StewardProposal> {
+    blocking(move || {
+        hk_core::steward::propose_memory_edit(
+            &home_dir()?,
+            &params.agent,
+            &params.path,
+            &params.content,
+        )
+    })
+    .await
+}
+
+#[derive(Deserialize)]
 pub struct ApproveParams {
     pub proposal_id: String,
 }

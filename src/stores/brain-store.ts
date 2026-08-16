@@ -82,6 +82,11 @@ interface BrainState {
   error: string | null;
   fetchSnapshot: () => Promise<void>;
   propose: (prompt: string) => Promise<void>;
+  proposeMemoryEdit: (
+    agent: BrainAgentId,
+    path: string,
+    content: string,
+  ) => Promise<boolean>;
   approve: (proposalId: string) => Promise<void>;
 }
 
@@ -141,6 +146,33 @@ export const useBrainStore = create<BrainState>((set, get) => ({
       }));
     } catch (error) {
       set({ error: humanizeError(error), proposing: false });
+    }
+  },
+
+  async proposeMemoryEdit(agent, path, content) {
+    if (get().proposing) return false;
+    set({ proposing: true, error: null });
+    try {
+      const proposal = await transport<StewardProposal>(
+        "steward_propose_memory_edit",
+        { agent, path, content },
+      );
+      set((state) => ({
+        proposing: false,
+        proposals: [proposal, ...state.proposals],
+        messages: [
+          ...state.messages,
+          {
+            id: messageId(),
+            role: "steward",
+            content: `Private memory edit proposal ready: ${proposal.title}`,
+          },
+        ],
+      }));
+      return true;
+    } catch (error) {
+      set({ error: humanizeError(error), proposing: false });
+      return false;
     }
   },
 

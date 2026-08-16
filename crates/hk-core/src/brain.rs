@@ -116,11 +116,29 @@ fn snapshot_agent(adapter: &dyn AgentAdapter) -> BrainAgent {
         .filter(|path| path.exists())
         .map(|path| {
             let bytes = path.metadata().map(|m| m.len()).unwrap_or(0);
+            let within_limit = bytes <= crate::steward::MAX_MEMORY_EDIT_BYTES as u64;
+            let full_content = within_limit
+                .then(|| fs::read_to_string(path).ok())
+                .flatten();
+            let editable = full_content.is_some();
             brain_file(
                 path,
-                true,
-                format!("{bytes} bytes · private, read-only"),
-                read_text_preview(path),
+                !editable,
+                if editable {
+                    format!("{bytes} bytes · private, editable with approval")
+                } else if !within_limit {
+                    format!(
+                        "{bytes} bytes · private, read-only (over {} KiB limit)",
+                        crate::steward::MAX_MEMORY_EDIT_BYTES / 1024
+                    )
+                } else {
+                    format!("{bytes} bytes · private, read-only (not valid UTF-8)")
+                },
+                if within_limit {
+                    full_content
+                } else {
+                    read_text_preview(path)
+                },
             )
         })
         .collect();
@@ -509,5 +527,52 @@ mod tests {
         let entries = snapshot_mcp(temp.path(), &adapters).unwrap();
 
         assert_eq!(entries[0].status, "configured");
+    }
+
+    #[test]
+    fn memory_snapshot_is_complete_within_edit_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let memory = temp.path().join(".codex/memories/MEMORY.md");
+        fs::create_dir_all(memory.parent().unwrap()).unwrap();
+        let content = "x".repeat(70 * 1024);
+        fs::write(&memory, &content).unwrap();
+
+        let snapshot = snapshot(temp.path()).unwrap();
+        let file = &snapshot.agents[0].memory[0];
+
+        assert_eq!(file.content.as_deref(), Some(content.as_str()));
+        assert!(!file.read_only);
+    }
+
+    #[test]
+    fn oversized_memory_snapshot_is_read_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let memory = temp.path().join(".codex/memories/MEMORY.md");
+        fs::create_dir_all(memory.parent().unwrap()).unwrap();
+        fs::write(
+            &memory,
+            vec![b'x'; crate::steward::MAX_MEMORY_EDIT_BYTES + 1],
+        )
+        .unwrap();
+
+        let snapshot = snapshot(temp.path()).unwrap();
+        let file = &snapshot.agents[0].memory[0];
+
+        assert!(file.read_only);
+        assert!(file.summary.contains("over 256 KiB limit"));
+    }
+
+    #[test]
+    fn non_utf8_memory_snapshot_is_read_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let memory = temp.path().join(".codex/memories/MEMORY.md");
+        fs::create_dir_all(memory.parent().unwrap()).unwrap();
+        fs::write(&memory, [0xff, 0xfe]).unwrap();
+
+        let snapshot = snapshot(temp.path()).unwrap();
+        let file = &snapshot.agents[0].memory[0];
+
+        assert!(file.read_only);
+        assert!(file.summary.contains("not valid UTF-8"));
     }
 }

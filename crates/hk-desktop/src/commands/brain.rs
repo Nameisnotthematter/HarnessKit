@@ -15,6 +15,15 @@ pub fn steward_propose(prompt: String) -> Result<steward::StewardProposal, HkErr
 }
 
 #[tauri::command]
+pub fn steward_propose_memory_edit(
+    agent: String,
+    path: String,
+    content: String,
+) -> Result<steward::StewardProposal, HkError> {
+    steward::propose_memory_edit(&home_dir()?, &agent, &path, &content)
+}
+
+#[tauri::command]
 pub fn steward_approve(proposal_id: String) -> Result<steward::StewardProposal, HkError> {
     steward::approve(&home_dir()?, &proposal_id)
 }
