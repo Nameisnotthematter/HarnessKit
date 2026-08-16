@@ -27,3 +27,8 @@ pub fn steward_propose_memory_edit(
 pub fn steward_approve(proposal_id: String) -> Result<steward::StewardProposal, HkError> {
     steward::approve(&home_dir()?, &proposal_id)
 }
+
+#[tauri::command]
+pub fn steward_reject(proposal_id: String) -> Result<steward::StewardProposal, HkError> {
+    steward::reject(&home_dir()?, &proposal_id)
+}

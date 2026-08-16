@@ -113,14 +113,17 @@ describe("Brain Steward components", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("shows review evidence and only the approval write action", () => {
+  it("shows review evidence with approve and reject actions", () => {
+    const onReject = vi.fn();
     render(
       <StewardPanel
         messages={[]}
         proposing={false}
         approvingId={null}
+        rejectingId={null}
         onPropose={vi.fn()}
         onApprove={vi.fn()}
+        onReject={onReject}
         proposals={[
           {
             id: "p1",
@@ -142,6 +145,9 @@ describe("Brain Steward components", () => {
     expect(
       screen.getByRole("button", { name: "Approve & apply" }),
     ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+    expect(onReject).toHaveBeenCalledWith("p1");
     expect(
       screen.queryByRole("button", { name: /save/i }),
     ).not.toBeInTheDocument();

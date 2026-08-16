@@ -18,11 +18,13 @@ export default function BrainPage() {
     loading,
     proposing,
     approvingId,
+    rejectingId,
     error,
     fetchSnapshot,
     propose,
     proposeMemoryEdit,
     approve,
+    reject,
   } = useBrainStore();
 
   useEffect(() => {
@@ -106,8 +108,10 @@ export default function BrainPage() {
             proposals={proposals}
             proposing={proposing}
             approvingId={approvingId}
+            rejectingId={rejectingId}
             onPropose={propose}
             onApprove={approve}
+            onReject={reject}
           />
         </div>
       ) : (

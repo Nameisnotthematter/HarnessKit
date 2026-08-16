@@ -305,6 +305,28 @@ pub fn approve(home: &Path, proposal_id: &str) -> Result<StewardProposal, HkErro
     }
 }
 
+pub fn reject(home: &Path, proposal_id: &str) -> Result<StewardProposal, HkError> {
+    validate_id(proposal_id)?;
+    let path = proposal_path(home, proposal_id);
+    let mut stored = read_stored(&path)?;
+    if stored.proposal.status != "pending" {
+        return Err(HkError::Conflict(format!(
+            "proposal {} is already {}",
+            proposal_id, stored.proposal.status
+        )));
+    }
+
+    stored.proposal.status = "rejected".into();
+    save_stored(home, &stored)?;
+    append_audit(
+        home,
+        proposal_id,
+        "rejected",
+        "proposal rejected without applying actions",
+    )?;
+    Ok(stored.proposal)
+}
+
 fn parse_mcp_toggle(prompt: &str) -> Option<ModelAction> {
     let lower = prompt.to_ascii_lowercase();
     if !lower.contains("mcp") {
@@ -1566,6 +1588,35 @@ mod tests {
             fs::read_to_string(temp.path().join(".harnesskit/steward/audit.jsonl")).unwrap();
         assert!(audit.contains("\"event\":\"proposed\""));
         assert!(audit.contains("\"event\":\"approved\""));
+    }
+
+    #[test]
+    fn rejected_proposal_is_recorded_without_writing_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(".hermes/memories/MEMORY.md");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "old memory").unwrap();
+
+        let proposal =
+            propose_memory_edit(temp.path(), "hermes", path.to_str().unwrap(), "new memory")
+                .unwrap();
+        let rejected = reject(temp.path(), &proposal.id).unwrap();
+
+        assert_eq!(rejected.status, "rejected");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "old memory");
+        assert!(!temp
+            .path()
+            .join(".harnesskit/backups")
+            .join(&proposal.id)
+            .exists());
+        assert_eq!(list_proposals(temp.path()).unwrap()[0].status, "rejected");
+        assert!(matches!(
+            approve(temp.path(), &proposal.id),
+            Err(HkError::Conflict(_))
+        ));
+        let audit =
+            fs::read_to_string(temp.path().join(".harnesskit/steward/audit.jsonl")).unwrap();
+        assert!(audit.contains("\"event\":\"rejected\""));
     }
 
     #[test]

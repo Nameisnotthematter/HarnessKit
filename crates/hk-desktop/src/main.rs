@@ -80,6 +80,7 @@ fn main() {
             commands::steward_propose,
             commands::steward_propose_memory_edit,
             commands::steward_approve,
+            commands::steward_reject,
             commands::read_config_file_preview,
             commands::scan_git_repo,
             commands::install_scanned_skills,

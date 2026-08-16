@@ -37,6 +37,7 @@ describe("brain-store", () => {
       loading: false,
       proposing: false,
       approvingId: null,
+      rejectingId: null,
       error: null,
     });
   });
@@ -95,5 +96,23 @@ describe("brain-store", () => {
       proposalId: "p1",
     });
     expect(transport).toHaveBeenNthCalledWith(2, "brain_snapshot");
+  });
+
+  it("rejects through steward_reject without refreshing brain files", async () => {
+    const rejected = { ...proposal, status: "rejected" as const };
+    useBrainStore.setState({ proposals: [proposal] });
+    vi.mocked(transport).mockResolvedValue(rejected);
+
+    await useBrainStore.getState().reject("p1");
+
+    expect(transport).toHaveBeenCalledOnce();
+    expect(transport).toHaveBeenCalledWith("steward_reject", {
+      proposalId: "p1",
+    });
+    expect(useBrainStore.getState().proposals).toEqual([rejected]);
+    const messages = useBrainStore.getState().messages;
+    expect(messages[messages.length - 1]?.content).toBe(
+      "Rejected proposal: Enable MCP",
+    );
   });
 });

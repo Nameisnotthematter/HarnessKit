@@ -1,4 +1,10 @@
-import { Check, Loader2, MessageSquareText, ShieldAlert } from "lucide-react";
+import {
+  Check,
+  Loader2,
+  MessageSquareText,
+  ShieldAlert,
+  X,
+} from "lucide-react";
 import { useState } from "react";
 import type { StewardMessage, StewardProposal } from "@/stores/brain-store";
 
@@ -7,8 +13,10 @@ interface StewardPanelProps {
   proposals: StewardProposal[];
   proposing: boolean;
   approvingId: string | null;
+  rejectingId: string | null;
   onPropose: (prompt: string) => void;
   onApprove: (proposalId: string) => void;
+  onReject: (proposalId: string) => void;
 }
 
 export function StewardPanel({
@@ -16,8 +24,10 @@ export function StewardPanel({
   proposals,
   proposing,
   approvingId,
+  rejectingId,
   onPropose,
   onApprove,
+  onReject,
 }: StewardPanelProps) {
   const [prompt, setPrompt] = useState("");
 
@@ -127,19 +137,34 @@ export function StewardPanel({
               </div>
             </div>
 
-            <div className="mt-3 flex justify-end">
+            <div className="mt-3 flex justify-end gap-2">
               {proposal.status === "pending" ? (
-                <button
-                  type="button"
-                  onClick={() => onApprove(proposal.id)}
-                  disabled={approvingId !== null}
-                  className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                >
-                  {approvingId === proposal.id && (
-                    <Loader2 size={12} className="animate-spin" />
-                  )}
-                  Approve &amp; apply
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => onReject(proposal.id)}
+                    disabled={approvingId !== null || rejectingId !== null}
+                    className="flex items-center gap-1.5 rounded-lg border border-destructive/40 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                  >
+                    {rejectingId === proposal.id ? (
+                      <Loader2 size={12} className="animate-spin" />
+                    ) : (
+                      <X size={12} />
+                    )}
+                    Reject
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onApprove(proposal.id)}
+                    disabled={approvingId !== null || rejectingId !== null}
+                    className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  >
+                    {approvingId === proposal.id && (
+                      <Loader2 size={12} className="animate-spin" />
+                    )}
+                    Approve &amp; apply
+                  </button>
+                </>
               ) : (
                 <span className="text-xs capitalize text-muted-foreground">
                   {proposal.status}

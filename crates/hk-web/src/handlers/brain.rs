@@ -56,3 +56,9 @@ pub async fn steward_approve(
 ) -> Result<hk_core::steward::StewardProposal> {
     blocking(move || hk_core::steward::approve(&home_dir()?, &params.proposal_id)).await
 }
+
+pub async fn steward_reject(
+    Json(params): Json<ApproveParams>,
+) -> Result<hk_core::steward::StewardProposal> {
+    blocking(move || hk_core::steward::reject(&home_dir()?, &params.proposal_id)).await
+}

@@ -79,6 +79,7 @@ interface BrainState {
   loading: boolean;
   proposing: boolean;
   approvingId: string | null;
+  rejectingId: string | null;
   error: string | null;
   fetchSnapshot: () => Promise<void>;
   propose: (prompt: string) => Promise<void>;
@@ -88,6 +89,7 @@ interface BrainState {
     content: string,
   ) => Promise<boolean>;
   approve: (proposalId: string) => Promise<void>;
+  reject: (proposalId: string) => Promise<void>;
 }
 
 function messageId(): string {
@@ -101,6 +103,7 @@ export const useBrainStore = create<BrainState>((set, get) => ({
   loading: false,
   proposing: false,
   approvingId: null,
+  rejectingId: null,
   error: null,
 
   async fetchSnapshot() {
@@ -177,7 +180,7 @@ export const useBrainStore = create<BrainState>((set, get) => ({
   },
 
   async approve(proposalId) {
-    if (get().approvingId) return;
+    if (get().approvingId || get().rejectingId) return;
     set({ approvingId: proposalId, error: null });
     try {
       const approved = await transport<StewardProposal>("steward_approve", {
@@ -200,6 +203,32 @@ export const useBrainStore = create<BrainState>((set, get) => ({
       await get().fetchSnapshot();
     } catch (error) {
       set({ error: humanizeError(error), approvingId: null });
+    }
+  },
+
+  async reject(proposalId) {
+    if (get().approvingId || get().rejectingId) return;
+    set({ rejectingId: proposalId, error: null });
+    try {
+      const rejected = await transport<StewardProposal>("steward_reject", {
+        proposalId,
+      });
+      set((state) => ({
+        rejectingId: null,
+        proposals: state.proposals.map((proposal) =>
+          proposal.id === proposalId ? rejected : proposal,
+        ),
+        messages: [
+          ...state.messages,
+          {
+            id: messageId(),
+            role: "steward",
+            content: `Rejected proposal: ${rejected.title}`,
+          },
+        ],
+      }));
+    } catch (error) {
+      set({ error: humanizeError(error), rejectingId: null });
     }
   },
 }));
